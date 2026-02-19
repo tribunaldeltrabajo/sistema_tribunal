@@ -62,8 +62,24 @@ def convertir_a_jus(monto_pesos, fecha_conversion, df_jus):
         st.error(f"Error en conversión a JUS: {str(e)}")
         return None
 
+# Cargar RIPTE
+def cargar_minimo_ripte():
+    try:
+        df = pd.read_csv("data/dataset_ripte.csv", encoding='utf-8')
+        df.columns = df.columns.str.strip()
+        df['monto_en_pesos'] = df['monto_en_pesos'].astype(str).str.replace('.', '').str.replace(',', '.').str.strip()
+        df['monto_en_pesos'] = pd.to_numeric(df['monto_en_pesos'], errors='coerce')
+        ultimo = df.iloc[0]
+        minimo = float(ultimo['monto_en_pesos']) / 2
+        mes = str(ultimo.get('mes', '')).strip()
+        anio = str(int(ultimo['año'])) if 'año' in df.columns else ''
+        return minimo, f"{mes} {anio}"
+    except Exception as e:
+        return None, ""
+
 # Cargar datos
 df_jus = cargar_dataset_jus()
+ripte_minimo, ripte_periodo = cargar_minimo_ripte()
 
 # Título principal
 st.title("💵 CALCULADORA DE HONORARIOS PROFESIONALES")
@@ -168,306 +184,179 @@ with tab1:
 # ============================================
 with tab2:
     st.header("📋 Regulación Ley 24432")
-    
-    # Columnas principales: Entrada | Resultado
-    col_entrada, col_resultado = st.columns([1, 1])
-    
+
+    # --- Datos base ---
+    col_entrada, col_fecha = st.columns([1, 1])
     with col_entrada:
-        st.markdown("**💰 Datos del Juicio**")
         monto_juicio = st.number_input(
-            "Monto ($)",
+            "💰 Monto del Juicio ($)",
             min_value=0.01,
             value=1000000.00,
             step=10000.00,
             format="%.2f",
             key="monto_juicio"
         )
-        
+    with col_fecha:
         fecha_sent = st.date_input(
-            "Fecha",
+            "📅 Fecha",
             value=date.today(),
             min_value=date(2017, 1, 1),
             max_value=date.today(),
             format="DD/MM/YYYY",
             key="fecha_sent"
         )
-    
-    # Conversión a JUS
+
     res_base = convertir_a_jus(monto_juicio, fecha_sent, df_jus)
-    
+
     if res_base:
+        valor_jus = res_base['valor_jus']
         limite_25 = monto_juicio * 0.25
-        
-        with col_resultado:
-            st.markdown(f"**📊 Límite 25%:** {formato_moneda(limite_25)}")
-            st.caption(f"{(limite_25/res_base['valor_jus']):.2f} JUS | {res_base['acuerdo']}")
-        
-        # Inicializar estados con keys únicos por ID
-        if 'abog_data' not in st.session_state:
-            st.session_state.abog_data = [{'id': 1, 'pesos': 0.0, 'iva': False}]
-            st.session_state.abog_counter = 1
-        if 'aux_data' not in st.session_state:
-            st.session_state.aux_data = [{'id': 1, 'pesos': 0.0}]
-            st.session_state.aux_counter = 1
-        
-        # Calcular totales individuales (Caja siempre incluida)
-        total_abog = sum([a['pesos'] for a in st.session_state.abog_data])
-        total_iva = sum([a['pesos'] * 0.21 for a in st.session_state.abog_data if a.get('iva', False)])
-        total_caja = sum([a['pesos'] * 0.10 for a in st.session_state.abog_data])  # Caja siempre
-        total_aux = sum([a['pesos'] for a in st.session_state.aux_data])
-        
-        total_usado = total_abog + total_iva + total_caja + total_aux
-        pct_usado = (total_usado / monto_juicio) * 100
-        
-        # Mostrar porcentaje usado
-        with col_resultado:
-            color = "red" if pct_usado > 25 else ("orange" if pct_usado > 20 else "green")
-            emoji = "🔴" if pct_usado > 25 else ("🟡" if pct_usado > 20 else "🟢")
-            st.markdown(f"<h1 style='text-align: center; color: {color};'>{emoji} {pct_usado:.2f}%</h1>", unsafe_allow_html=True)
-            st.progress(min(pct_usado / 25.0, 1.0))
-        
-        st.markdown("")
-        
+
+        # ── FILAS ──
+        CONCEPTOS = [
+            {'key': 'actora',    'label': '👨‍⚖️ Rep. Letrada Actora'},
+            {'key': 'auxiliar_1', 'label': '🔬 Auxiliar 1'},
+            {'key': 'auxiliar_2', 'label': '🔬 Auxiliar 2'},
+            {'key': 'auxiliar_3', 'label': '🔬 Auxiliar 3'},
+            {'key': 'auxiliar_4', 'label': '🔬 Auxiliar 4'},
+        ]
+
+        # ── HEADER ──
         st.markdown("---")
-        
-        # ============================================
-        # ABOGADOS Y AUXILIARES EN 2 COLUMNAS
-        # ============================================
-        col_abogados, col_auxiliares = st.columns([1, 1], gap="large")
-        
-        # COLUMNA IZQUIERDA: ABOGADOS
-        with col_abogados:
-            st.markdown('<div style="background-color: #4CAF50; color: white; padding: 10px; border-radius: 5px; text-align: center; margin-bottom: 10px;"><b>👨‍⚖️ Abogados</b></div>', unsafe_allow_html=True)
-            
-            for i, abog in enumerate(st.session_state.abog_data):
-                col1, col2 = st.columns([1, 1])
-                
-                with col1:
-                    otros = sum([a['pesos'] for j, a in enumerate(st.session_state.abog_data) if j != i])
-                    otros_iva = sum([a['pesos'] * 0.21 for j, a in enumerate(st.session_state.abog_data) if j != i and a.get('iva', False)])
-                    otros_caja = sum([a['pesos'] * 0.10 for j, a in enumerate(st.session_state.abog_data) if j != i])
-                    disp = limite_25 - total_aux - otros - otros_iva - otros_caja
-                    
-                    monto_base_abog = abog['pesos']
-                    iva_abog = monto_base_abog * 0.21 if abog.get('iva', False) else 0
-                    caja_abog = monto_base_abog * 0.10
-                    monto_total_abog = monto_base_abog + iva_abog + caja_abog
-                    
-                    disp_ajustado = disp + monto_total_abog
-                    
-                    max_pct = (disp_ajustado / (monto_juicio * (1.21 if abog.get('iva', False) else 1) * 1.10)) * 100 if monto_juicio > 0 else 0
-                    
-                    pct = st.number_input(
-                        "% del monto",
-                        min_value=0.00,
-                        max_value=max(0.00, max_pct),
-                        value=round((abog['pesos'] / monto_juicio * 100) if monto_juicio > 0 else 0.0, 2),
-                        step=0.01,
-                        format="%.2f",
-                        key=f"abog_pct_{abog['id']}_{i}"
-                    )
-                    
-                    nuevo_pesos = round((pct / 100) * monto_juicio, 2)
-                    if abs(nuevo_pesos - abog['pesos']) > 0.001:
-                        st.session_state.abog_data[i]['pesos'] = nuevo_pesos
-                        st.rerun()
-                
-                with col2:
-                    max_pesos_permitido = disp_ajustado / ((1.21 if abog.get('iva', False) else 1) * 1.10)
-                    
-                    pesos = st.number_input(
-                        "$ Monto",
-                        min_value=0.00,
-                        max_value=max(0.00, max_pesos_permitido),
-                        value=round(abog['pesos'], 2),
-                        step=100.00,
-                        format="%.2f",
-                        key=f"abog_pesos_{abog['id']}_{i}"
-                    )
-                    
-                    if abs(pesos - abog['pesos']) > 0.001:
-                        st.session_state.abog_data[i]['pesos'] = round(pesos, 2)
-                        st.rerun()
-                
-                col_j, col_iv, col_del = st.columns([2, 1, 0.5])
-                
-                with col_j:
-                    jus_abog = abog['pesos'] / res_base['valor_jus']
-                    alerta_jus = " ⚠️ No supera mínimo" if jus_abog < 7 else ""
-                    st.caption(f"{jus_abog:.2f} JUS{alerta_jus}")
-                
-                with col_iv:
-                    iva = st.checkbox("IVA", key=f"abog_iva_{abog['id']}_{i}", value=abog.get('iva', False))
-                    if iva != abog.get('iva', False):
-                        st.session_state.abog_data[i]['iva'] = iva
-                        st.rerun()
-                
-                with col_del:
-                    if len(st.session_state.abog_data) > 1:
-                        if st.button("🗑️", key=f"del_abog_{abog['id']}_{i}"):
-                            st.session_state.abog_data.pop(i)
-                            st.rerun()
-                
-                detalles = [f"Caja: {formato_moneda(round(abog['pesos'] * 0.10, 2))}"]
-                if abog.get('iva', False):
-                    detalles.append(f"IVA: {formato_moneda(round(abog['pesos'] * 0.21, 2))}")
-                st.caption(" | ".join(detalles))
-                st.markdown("")
-            
-            if pct_usado >= 25.0:
-                st.button("➕ Abogado", key="add_abog", disabled=True)
-                st.caption("⚠️ Límite alcanzado")
-            else:
-                if st.button("➕ Abogado", key="add_abog"):
-                    st.session_state.abog_counter += 1
-                    st.session_state.abog_data.append({'id': st.session_state.abog_counter, 'pesos': 0.0, 'iva': False})
-                    st.rerun()
-            
-            total_abog_individual = sum([a['pesos'] for a in st.session_state.abog_data])
-            total_iva_individual = sum([a['pesos'] * 0.21 for a in st.session_state.abog_data if a.get('iva', False)])
-            total_caja_individual = sum([a['pesos'] * 0.10 for a in st.session_state.abog_data])
-            
-            st.caption(f"**Total:** {formato_moneda(round(total_abog_individual, 2))} + Caja {formato_moneda(round(total_caja_individual, 2))} + IVA {formato_moneda(round(total_iva_individual, 2))}")
-        
-        # COLUMNA DERECHA: AUXILIARES
-        with col_auxiliares:
-            st.markdown('<div style="background-color: #2196F3; color: white; padding: 10px; border-radius: 5px; text-align: center; margin-bottom: 10px;"><b>🔬 Auxiliares</b></div>', unsafe_allow_html=True)
-            
-            for i, aux in enumerate(st.session_state.aux_data):
-                col1, col2 = st.columns([1, 1])
-                
-                with col1:
-                    otros = sum([a['pesos'] for j, a in enumerate(st.session_state.aux_data) if j != i])
-                    total_abog_con_extras = sum([
-                        a['pesos'] + 
-                        (a['pesos'] * 0.21 if a.get('iva', False) else 0) + 
-                        (a['pesos'] * 0.10)
-                        for a in st.session_state.abog_data
-                    ])
-                    disp = limite_25 - total_abog_con_extras - otros
-                    
-                    max_pct = (disp / monto_juicio) * 100 if monto_juicio > 0 else 0
-                    
-                    pct = st.number_input(
-                        "% del monto",
-                        min_value=0.00,
-                        max_value=max(0.00, max_pct),
-                        value=round((aux['pesos'] / monto_juicio * 100) if monto_juicio > 0 else 0.0, 2),
-                        step=0.01,
-                        format="%.2f",
-                        key=f"aux_pct_{aux['id']}_{i}"
-                    )
-                    
-                    nuevo_pesos = round((pct / 100) * monto_juicio, 2)
-                    if abs(nuevo_pesos - aux['pesos']) > 0.001:
-                        st.session_state.aux_data[i]['pesos'] = nuevo_pesos
-                        st.rerun()
-                
-                with col2:
-                    pesos = st.number_input(
-                        "$ Monto",
-                        min_value=0.00,
-                        max_value=max(0.00, disp),
-                        value=round(aux['pesos'], 2),
-                        step=100.00,
-                        format="%.2f",
-                        key=f"aux_pesos_{aux['id']}_{i}"
-                    )
-                    
-                    if abs(pesos - aux['pesos']) > 0.001:
-                        st.session_state.aux_data[i]['pesos'] = round(pesos, 2)
-                        st.rerun()
-                
-                col_nom, col_del = st.columns([3, 0.5])
-                
-                with col_nom:
-                    st.caption(f"Auxiliar {i+1}")
-                
-                with col_del:
-                    if len(st.session_state.aux_data) > 1:
-                        if st.button("🗑️", key=f"del_aux_{aux['id']}_{i}"):
-                            st.session_state.aux_data.pop(i)
-                            st.rerun()
-                
-                st.markdown("")
-            
-            if pct_usado >= 25.0:
-                st.button("➕ Auxiliar", key="add_aux", disabled=True)
-            else:
-                if st.button("➕ Auxiliar", key="add_aux"):
-                    if len(st.session_state.aux_data) < 5:
-                        st.session_state.aux_counter += 1
-                        st.session_state.aux_data.append({'id': st.session_state.aux_counter, 'pesos': 0.0})
-                        st.rerun()
-            
-            st.caption(f"**Total:** {formato_moneda(round(total_aux, 2))}")
-        
+        h0, h1, h2, h3, h4, h5, h6 = st.columns([2.5, 3.0, 1.2, 1.2, 1.0, 1.0, 1.4])
+        h0.markdown("**Concepto**")
+        h1.markdown("**% del juicio**")
+        h2.markdown("**$ Honorarios**")
+        h3.markdown("**JUS**")
+        h4.markdown("**IVA**")
+        h5.markdown("**Aportes**")
+        h6.markdown("**Total fila**")
+
         st.markdown("")
-        
-        # Detalle de cálculos regulados
-        with st.expander("📋 Detalle de Cálculos Regulados"):
-            st.markdown(f"""
-            **Datos Base:**
-            - Monto del Juicio: {formato_moneda(monto_juicio)}
-            - Monto en JUS: {res_base['jus']:.2f} JUS
-            - Valor JUS: {formato_moneda(res_base['valor_jus'])} ({res_base['acuerdo']})
-            - Límite 25%: {formato_moneda(limite_25)} ({(limite_25/res_base['valor_jus']):.2f} JUS)
-            
-            ---
-            
-            **Abogados:**
-            """)
-            
-            for i, abog in enumerate(st.session_state.abog_data):
-                jus_abog = abog['pesos'] / res_base['valor_jus']
-                pct_abog = (abog['pesos'] / monto_juicio) * 100
-                iva_abog = abog['pesos'] * 0.21 if abog.get('iva', False) else 0
-                caja_abog = abog['pesos'] * 0.10
-                total_abog_individ = abog['pesos'] + iva_abog + caja_abog
-                
-                st.markdown(f"""
-                **Abogado {i+1}:**
-                - Honorarios: {formato_moneda(abog['pesos'])} ({pct_abog:.2f}% | {jus_abog:.2f} JUS)
-                - Caja (10%): {formato_moneda(caja_abog)}
-                {f"- IVA (21%): {formato_moneda(iva_abog)}" if abog.get('iva', False) else ""}
-                - **Subtotal: {formato_moneda(total_abog_individ)} ({(total_abog_individ/monto_juicio*100):.2f}%)**
-                """)
-            
-            total_abog_individual = sum([a['pesos'] for a in st.session_state.abog_data])
-            total_iva_individual = sum([a['pesos'] * 0.21 for a in st.session_state.abog_data if a.get('iva', False)])
-            total_caja_individual = sum([a['pesos'] * 0.10 for a in st.session_state.abog_data])
-            
-            st.markdown(f"""
-            **Total Abogados:**
-            - Honorarios: {formato_moneda(total_abog_individual)}
-            - Caja: {formato_moneda(total_caja_individual)}
-            - IVA: {formato_moneda(total_iva_individual)}
-            - **Total: {formato_moneda(total_abog_individual + total_caja_individual + total_iva_individual)} ({((total_abog_individual + total_caja_individual + total_iva_individual)/monto_juicio*100):.2f}%)**
-            
-            ---
-            
-            **Auxiliares:**
-            """)
-            
-            for i, aux in enumerate(st.session_state.aux_data):
-                jus_aux = aux['pesos'] / res_base['valor_jus']
-                pct_aux = (aux['pesos'] / monto_juicio) * 100
-                
-                st.markdown(f"""
-                **Auxiliar {i+1}:** {formato_moneda(aux['pesos'])} ({pct_aux:.2f}% | {jus_aux:.2f} JUS)
-                """)
-            
-            st.markdown(f"""
-            **Total Auxiliares:** {formato_moneda(total_aux)} ({(total_aux/monto_juicio*100):.2f}%)
-            
-            ---
-            
-            **RESUMEN FINAL:**
-            - Total Abogados: {formato_moneda(total_abog_individual + total_caja_individual + total_iva_individual)} ({((total_abog_individual + total_caja_individual + total_iva_individual)/monto_juicio*100):.2f}%)
-            - Total Auxiliares: {formato_moneda(total_aux)} ({(total_aux/monto_juicio*100):.2f}%)
-            - **TOTAL GENERAL: {formato_moneda(total_usado)} ({pct_usado:.2f}%)**
-            - **REMANENTE: {formato_moneda(limite_25 - total_usado)} ({(25.0 - pct_usado):.2f}%)**
-            """)
+
+        # ── FILAS CON SLIDER ──
+        for c in CONCEPTOS:
+            key = c['key']
+            col0, col1, col2, col3, col4, col5, col6 = st.columns([2.5, 3.0, 1.2, 1.2, 1.0, 1.0, 1.4])
+
+            with col0:
+                st.markdown(f"<div style='padding-top:28px'>{c['label']}</div>", unsafe_allow_html=True)
+
+            with col1:
+                pct = st.slider(
+                    "pct", min_value=0.0, max_value=25.0,
+                    value=0.0, step=0.05, format="%.2f%%",
+                    key=f"pct_{key}", label_visibility="collapsed"
+                )
+
+            iva = st.session_state.get(f"iva_{key}", False)
+            aportes = st.session_state.get(f"ap_{key}", 10)
+            pesos = round((pct / 100) * monto_juicio, 2)
+            jus = round(pesos / valor_jus, 2) if valor_jus > 0 else 0.0
+            iva_monto = pesos * 0.21 if iva else 0.0
+            ap_monto = pesos * (aportes / 100)
+            total_fila = pesos + iva_monto + ap_monto
+
+            with col2:
+                st.markdown(f"<div style='padding-top:28px; font-weight:bold'>{formato_moneda(pesos)}</div>", unsafe_allow_html=True)
+
+            with col3:
+                st.markdown(f"<div style='padding-top:28px'>{jus:.2f}</div>", unsafe_allow_html=True)
+
+            with col4:
+                iva = st.checkbox("21%", value=iva, key=f"iva_{key}")
+
+            with col5:
+                aportes = st.selectbox("ap", options=[5, 10],
+                    index=0 if aportes == 5 else 1,
+                    format_func=lambda x: f"{x}%",
+                    key=f"ap_{key}", label_visibility="collapsed")
+
+            with col6:
+                st.markdown(f"<div style='padding-top:28px; font-weight:bold'>{formato_moneda(total_fila)}</div>", unsafe_allow_html=True)
+
+        # ── FILA DEMANDADA (70% de actora, sin slider) ──
+        st.markdown("")
+        pct_actora = st.session_state.get("pct_actora", 0.0)
+        pesos_actora = round((pct_actora / 100) * monto_juicio, 2)
+        pesos_dem = round(pesos_actora * 0.70, 2)
+        pct_dem = round((pesos_dem / monto_juicio * 100) if monto_juicio > 0 else 0.0, 2)
+        jus_dem = round(pesos_dem / valor_jus, 2) if valor_jus > 0 else 0.0
+        iva_dem = st.session_state.get("iva_demandada", False)
+        ap_dem = st.session_state.get("ap_demandada", 10)
+
+        d0, d1, d2, d3, d4, d5, d6 = st.columns([2.5, 3.0, 1.2, 1.2, 1.0, 1.0, 1.4])
+        iva_dem_monto = pesos_dem * 0.21 if iva_dem else 0.0
+        ap_dem_monto = pesos_dem * (ap_dem / 100)
+        total_dem = pesos_dem + iva_dem_monto + ap_dem_monto
+        with d0:
+            st.markdown("<div style='padding-top:8px; font-weight:bold; color:#E65100'>👨‍⚖️ Rep. Letrada Demandada<br><small style='color:#888'>70% actora · automático</small></div>", unsafe_allow_html=True)
+        with d1:
+            st.markdown(f"<div style='padding-top:8px; color:#888'>{pct_dem:.2f}%</div>", unsafe_allow_html=True)
+        with d2:
+            st.markdown(f"<div style='padding-top:8px; font-weight:bold; color:#E65100'>{formato_moneda(pesos_dem)}</div>", unsafe_allow_html=True)
+        with d3:
+            st.markdown(f"<div style='padding-top:8px; color:#E65100'>{jus_dem:.2f}</div>", unsafe_allow_html=True)
+        with d4:
+            iva_dem = st.checkbox("21%", value=iva_dem, key="iva_demandada")
+        with d5:
+            ap_dem = st.selectbox("ap", options=[5, 10],
+                index=0 if ap_dem == 5 else 1,
+                format_func=lambda x: f"{x}%",
+                key="ap_demandada", label_visibility="collapsed")
+        with d6:
+            st.markdown(f"<div style='padding-top:8px; font-weight:bold; color:#E65100'>{formato_moneda(total_dem)}</div>", unsafe_allow_html=True)
+
+        # ── TOTALES ──
+        st.markdown("---")
+
+        total_pesos = 0.0
+        total_jus = 0.0
+        for c in CONCEPTOS:
+            key = c['key']
+            pct_f = st.session_state.get(f"pct_{key}", 0.0)
+            iva_f = st.session_state.get(f"iva_{key}", False)
+            ap_f = st.session_state.get(f"ap_{key}", 10)
+            p = round((pct_f / 100) * monto_juicio, 2)
+            factor = 1.0 + (0.21 if iva_f else 0.0) + (ap_f / 100)
+            total_pesos += p * factor
+            total_jus += round(p / valor_jus, 2) if valor_jus > 0 else 0.0
+
+        # Demandada no suma al 25% pero sí se muestra
+        pct_usado = (total_pesos / monto_juicio * 100) if monto_juicio > 0 else 0.0
+        disponible = limite_25 - total_pesos
+        barra_pct = min(pct_usado / 25.0 * 100, 100)
+        color = "red" if pct_usado > 25 else ("orange" if pct_usado > 20 else "green")
+        barra_color = "red" if pct_usado > 25 else ("orange" if pct_usado > 20 else "#4CAF50")
+        emoji = "🔴" if pct_usado > 25 else ("🟡" if pct_usado > 20 else "🟢")
+        color_disp = "#cc0000" if disponible < 0 else "#4CAF50"
+        jus_limite = limite_25 / valor_jus if valor_jus > 0 else 0.0
+
+        st.markdown(f"""
+        <div style="background:#1e1e1e; border:1px solid #444; border-radius:8px;
+                    padding:10px 20px; margin:8px 0 12px 0;
+                    display:flex; align-items:center; gap:0;">
+          <div style="flex:1; text-align:center;">
+            <div style="font-size:22px; font-weight:bold; color:{color};">{emoji} {pct_usado:.2f}%</div>
+            <div style="font-size:11px; color:#888;">del 25% usado</div>
+          </div>
+          <div style="width:1px; background:#444; height:40px;"></div>
+          <div style="flex:1; text-align:center;">
+            <div style="font-size:22px; font-weight:bold; color:{color_disp};">{formato_moneda(disponible)}</div>
+            <div style="font-size:11px; color:#888;">disponible</div>
+          </div>
+          <div style="width:1px; background:#444; height:40px;"></div>
+          <div style="flex:1; text-align:center;">
+            <div style="font-size:16px; font-weight:bold; color:#aaa;">{formato_moneda(limite_25)}</div>
+            <div style="font-size:11px; color:#888;">límite 25% | {jus_limite:.2f} JUS | {res_base['acuerdo']}</div>
+          </div>
+          <div style="flex:2; padding-left:20px;">
+            <div style="background:#333; border-radius:4px; height:10px;">
+              <div style="background:{barra_color}; height:10px; border-radius:4px; width:{barra_pct:.1f}%;"></div>
+            </div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
 # Mostrar últimos datos disponibles
 st.markdown("---")
