@@ -96,30 +96,23 @@ def verificar_acceso():
 # ============================================
 
 APLICACIONES = {
+    "audiencias": {
+        "nombre": "⚖️ Calculadora de Audiencias",
+        "modulo": "modulos.calculadora_audiencias"
+    },
+    "relatoria": {
+        "nombre": "📄 Calculadora Relatoría",
+        "modulo": "modulos.calculadora_relatoria"
+    },
     "ibm": {
-        "nombre": "💰 Calculadora IBM",
+        "nombre": "💰 Actualización IBM por RIPTE (Art. 12 inc. a LRT)",
         "modulo": "modulos.ibm"
     },
     "actualizacion": {
         "nombre": "📈 Actualización e Intereses",
         "modulo": "modulos.actualizacion"
     },
-    "lrt": {
-        "nombre": "🧮 Calculadora LRT",
-        "modulo": "modulos.calculadora_lrt"
-    },
-    "despidos": {
-        "nombre": "📊 Calculadora de Despidos",
-        "modulo": "modulos.calculadora_despidos"
-    },
-    "honorarios": {
-        "nombre": "💵 Cálculo de Honorarios",
-        "modulo": "modulos.honorarios"
-    },
-    "datasets": {
-        "nombre": "📋 Ver Datasets",
-        "modulo": "modulos.ver_datasets"
-    }
+
 }
 
 def ejecutar_aplicacion(nombre_app):
