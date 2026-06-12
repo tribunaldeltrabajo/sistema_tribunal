@@ -466,6 +466,10 @@ if calcular:
 # RESUMEN DE RESULTADOS
 # ─────────────────────────────────────────────
 
+# Limpiar session_state viejo sin las claves nuevas
+if 'rel_res' in st.session_state and 'capital_formula' not in st.session_state.get('rel_res', {}):
+    del st.session_state['rel_res']
+
 if 'rel_res' in st.session_state:
     r = st.session_state['rel_res']
     ipc  = r['ipc']
@@ -474,6 +478,19 @@ if 'rel_res' in st.session_state:
 
     cer_total = r.get('cer', {}).get('total', 0.0)
     tp_total  = r.get('tp',  {}).get('total', 0.0)
+
+    # ── Detalle fórmula ──
+    label_piso = " ⚠️ piso" if r['piso_aplicado'] else ""
+    st.markdown(f"**Capital fórmula:** {formato_moneda(r['capital_formula'])}")
+    st.caption(r['piso_txt'])
+    if r['art3']:
+        st.markdown(f"**20% art. 3 Ley 26.773:** {formato_moneda(r['adicional_20'])}")
+    st.markdown(
+        f"<div style='margin:8px 0 12px 0'>"
+        f"<span style='font-size:1.3rem;font-weight:700;color:#c0392b'>"
+        f"CAPITAL BASE: {formato_moneda(r['capital_total'])}{label_piso}</span></div>",
+        unsafe_allow_html=True
+    )
 
     # Ordenados de mayor a menor (sin CER)
     principales = sorted([
@@ -489,18 +506,17 @@ if 'rel_res' in st.session_state:
         _col = _colores_pos[_i] if _i < len(_colores_pos) else '#9c82ae'
         st.markdown(
             f"<div style='background:{_col};padding:8px 16px;margin-bottom:4px;"
-            f"display:flex;justify-content:space-between;align-items:center'>"
+            f"display:flex;justify-content:space-between;align-items:center;border-radius:6px'>"
             f"<span style='font-weight:600;color:white;font-size:13px'>{_lbl}</span>"
             f"<span style='font-family:monospace;font-size:16px;font-weight:800;color:white'>{formato_moneda(_val)}</span>"
             f"</div>",
             unsafe_allow_html=True
         )
-    # CER siempre último como referencia
     if cer_total:
         st.markdown(
             f"<div style='background:#7b5ea8;padding:8px 16px;margin-bottom:4px;"
-            f"display:flex;justify-content:space-between;align-items:center'>"
-            f"<span style='font-weight:600;color:white;font-size:13px'>CER + 3% (referencia)</span>"
+            f"display:flex;justify-content:space-between;align-items:center;border-radius:6px'>"
+            f"<span style='font-weight:600;color:white;font-size:13px'>CER + 3% (valor de referencia inflación)</span>"
             f"<span style='font-family:monospace;font-size:16px;font-weight:800;color:white'>{formato_moneda(cer_total)}</span>"
             f"</div>",
             unsafe_allow_html=True
