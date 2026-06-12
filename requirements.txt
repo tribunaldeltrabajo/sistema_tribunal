@@ -4,9 +4,4 @@ numpy==1.26.4
 python-dateutil==2.9.0
 reportlab==4.2.5
 openpyxl==3.1.5
-pip install xlrd==2.0.1
-xlrd>=2.0.1
-markdown-it-py-4.2.0 
-mdurl-0.1.2 
-pygments-2.20.0 
-rich-15.0.0
+xlrd==2.0.1
