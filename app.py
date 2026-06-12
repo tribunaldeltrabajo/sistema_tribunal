@@ -97,7 +97,7 @@ def verificar_acceso():
 
 APLICACIONES = {
     "audiencias": {
-        "nombre": "⚖️ Calculadora de Audiencias",
+        "nombre": "⚖️ Calculadora Audiencias",
         "modulo": "modulos.calculadora_audiencias"
     },
     "relatoria": {
