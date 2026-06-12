@@ -70,14 +70,14 @@ if 'act_res' in st.session_state:
     r    = st.session_state['act_res']
     r55  = st.session_state['act_55']
     r_ta = st.session_state['act_ta']
-    label_metodo = "IPC/CER + 3% simple (art. 276 LCT)"
+    label_metodo = "IPC + 3% simple (art. 276 LCT)"
 
     st.markdown("---")
 
-    # ── Bloque 1: IPC/CER + 3% ──
+    # ── Bloque 1: IPC + 3% ──
     st.markdown(f"**{label_metodo}**")
     st.markdown(
-        f"<div style='background:#c0392b;padding:8px 16px;margin-bottom:8px;"
+        f"<div style='background:#b8952a;padding:8px 16px;margin-bottom:8px;"
         f"display:flex;justify-content:space-between;align-items:center'>"
         f"<span style='color:white;font-weight:600'>Total actualizado</span>"
         f"<span style='color:white;font-family:monospace;font-size:16px;font-weight:800'>"
@@ -102,7 +102,7 @@ if 'act_res' in st.session_state:
     st.markdown("---")
     st.markdown("**Tasa Activa BNA**")
     st.markdown(
-        f"<div style='background:#566573;padding:8px 16px;margin-bottom:8px;"
+        f"<div style='background:#7b9e87;padding:8px 16px;margin-bottom:8px;"
         f"display:flex;justify-content:space-between;align-items:center'>"
         f"<span style='color:white;font-weight:600'>Total Tasa Activa BNA</span>"
         f"<span style='color:white;font-family:monospace;font-size:16px;font-weight:800'>"
@@ -129,19 +129,19 @@ if 'act_res' in st.session_state:
         r55_show = r55
     st.markdown("**Art. 55 Ley 27.802 — Juicios en trámite**")
 
-    colores = {'tasa_pasiva': '#1a5276', 'techo': '#7d6608', 'piso': '#7d6608'}
+    colores = {'tasa_pasiva': '#7b9e87', 'techo': '#7d6608', 'piso': '#7d6608'}
     aplica  = r55_show['aplica']
 
     filas_55 = [
-        ('Tasa Pasiva BCRA (inc. a)',     r55_show['tasa_pasiva'], 'tasa_pasiva'),
-        ('IPC + 3% — techo (inc. b)',     r55_show['ipc_3'],       'techo'),
-        ('67% de IPC + 3% — piso (inc. c)', r55_show['piso_67'],  'piso'),
+        ('Tasa Pasiva BCRA (Art. 55 inc. a LML conf. Res. 45/26 BCRA)',     r55_show['tasa_pasiva'], 'tasa_pasiva'),
+        ('IPC + 3% — techo (Art. 55 inc. b LML)',     r55_show['ipc_3'],       'techo'),
+        ('Art. 55 inc. c LML — 67% de IPC + 3%', r55_show['piso_67'],  'piso'),
     ]
     filas_55_sorted = sorted(filas_55, key=lambda x: -x[1])
 
     for label, valor, key in filas_55_sorted:
         es_aplica = (key == aplica)
-        bg = '#c0392b' if es_aplica else ('#2c3e50' if key == 'tasa_pasiva' else '#555')
+        bg = '#b8952a' if es_aplica else ('#2c3e50' if key == 'tasa_pasiva' else '#555')
         marca = " ✓ APLICA" if es_aplica else ""
         st.markdown(
             f"<div style='background:{bg};padding:7px 16px;margin-bottom:3px;"
@@ -206,7 +206,7 @@ if 'act_res' in st.session_state:
             <tr><td>Capital indexado</td><td class="num">{formato_moneda(r['capital_indexado'])}</td></tr>
             <tr><td>Interés 3% simple ({r['dias']} días)</td><td class="num">{formato_moneda(r['interes_3'])}</td></tr>
             """
-        titulo_met = "IPC/CER + 3% SIMPLE (Art. 276 LCT)"
+        titulo_met = "IPC + 3% SIMPLE (Art. 276 LCT)"
 
         tp = r55_show['detalle_tp']
         html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
@@ -222,7 +222,7 @@ table {{width:100%;border-collapse:collapse;margin-bottom:10px}}
 td,th {{padding:4px 7px;border:1px solid #ccc;font-size:9.5px}}
 th {{background:#333;color:#fff;font-weight:600;text-align:left}}
 .num {{text-align:right}}
-.aplica {{background:#c0392b;color:white;font-weight:700}}
+.aplica {{background:#b8952a;color:white;font-weight:700}}
 .footer {{text-align:center;font-size:8px;color:#888;margin-top:14px;border-top:1px solid #ddd;padding-top:6px}}
 .btn {{background:#333;color:white;border:none;padding:7px 16px;cursor:pointer;font-size:12px;font-weight:600;margin-bottom:10px}}
 </style></head><body>

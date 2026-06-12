@@ -81,7 +81,7 @@ def det_ipc_html(ipc, fecha_origen):
         """
 
 def renglones_color(variantes):
-    colores = ['#c0392b', '#1a5276', '#7d6608', '#1e8449']
+    colores = ['#4a8fa8', '#8e6f9e', '#7d6608', '#1e8449']
     for idx, (label, monto) in enumerate(variantes):
         color = colores[min(idx, len(colores)-1)]
         st.markdown(
@@ -104,14 +104,15 @@ def bloque_art55(r55, key_bcra, capital, pmi, fcalc):
                              usar_bcra=True, datos_cer_xls=DS['datos_cer_xls'])
     st.markdown("**Art. 55 Ley 27.802**")
     aplica = r55['aplica']
-    lbl_techo = 'CER + 3% — techo (inc. b)' if usar_bcra else 'IPC + 3% — techo (inc. b)'
-    lbl_piso  = '67% CER+3% — piso (inc. c)' if usar_bcra else '67% IPC+3% — piso (inc. c)'
+    lbl_techo = 'CER + 3% — techo BCRA (Art. 55 inc. b LML)' if usar_bcra else 'IPC + 3% — techo (Art. 55 inc. b LML)'
+    lbl_piso  = 'Art. 55 inc. c LML — 67% de CER + 3%' if usar_bcra else 'Art. 55 inc. c LML — 67% de IPC + 3%'
     for label, valor, key in sorted([
-        ('Tasa Pasiva BCRA (inc. a)', r55['tasa_pasiva'], 'tasa_pasiva'),
+        ('Tasa Pasiva BCRA (Art. 55 inc. a LML conf. Res. 45/26 BCRA)', r55['tasa_pasiva'], 'tasa_pasiva'),
         (lbl_techo,                   r55['ipc_3'],       'techo'),
         (lbl_piso,                    r55['piso_67'],     'piso'),
     ], key=lambda x: -x[1]):
-        bg = '#c0392b' if key == aplica else '#555'
+        _max_val_55 = max(r55['tasa_pasiva'], r55['ipc_3'], r55['piso_67'])
+        bg = '#8e6f9e' if valor == _max_val_55 else '#4a8fa8'
         marca = " ✓" if key == aplica else ""
         st.markdown(
             f"<div style='background:{bg};padding:6px 14px;margin-bottom:3px;"
@@ -126,7 +127,7 @@ def bloque_art55(r55, key_bcra, capital, pmi, fcalc):
 # UI
 # ─────────────────────────────────────────────
 
-st.markdown("# ⚖️ CALCULADORA DE AUDIENCIAS")
+st.markdown("# ⚖️ CALCULADORA AUDIENCIAS")
 st.markdown("---")
 
 tab_lrt, tab_despidos, tab_info = st.tabs(["🧮 LRT", "📋 Despidos", "ℹ️ Información"])
@@ -218,11 +219,10 @@ with tab_lrt:
         st.markdown("---")
 
         # Renglones de color
-        variantes = sorted([
-            ('IPC + 3% (Art. 276 LCT)', ipc['total']),
-            ('Tasa Activa BNA (Art. 12 inc. b LRT conf. Art. 11 Ley 27.348)', tasa['total']),
-        ], key=lambda x: -x[1])
-        renglones_color(variantes)
+        _vars_lrt = sorted([('IPC + 3% (Art. 276 LCT conf. Art. 54 LML)', ipc['total']), ('Tasa Activa BNA (Art. 12 inc. b LRT conf. Art. 11 Ley 27.348)', tasa['total'])], key=lambda x: -x[1])
+        for _idx, (_lbl, _val) in enumerate(_vars_lrt):
+            _col = '#8e6f9e' if _idx == 0 else '#4a8fa8'
+            st.markdown(f"<div style='background:{_col};padding:8px 16px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center'><span style='font-weight:600;color:white;font-size:13px'>{_lbl}</span><span style='font-family:monospace;font-size:16px;font-weight:800;color:white'>{formato_moneda(_val)}</span></div>", unsafe_allow_html=True)
 
         # Art. 55
         st.markdown("---")
@@ -243,12 +243,12 @@ with tab_lrt:
             aplica = r55['aplica']
 
             filas_55 = sorted([
-                ('Tasa Pasiva BCRA (inc. a)', r55['tasa_pasiva'], 'tasa_pasiva'),
-                ('IPC + 3% — techo (inc. b)', r55['ipc_3'],       'techo'),
-                ('67% IPC+3% — piso (inc. c)', r55['piso_67'],    'piso'),
+                ('Tasa Pasiva BCRA (Art. 55 inc. a LML conf. Res. 45/26 BCRA)', r55['tasa_pasiva'], 'tasa_pasiva'),
+                ('IPC + 3% — techo (Art. 55 inc. b LML)', r55['ipc_3'],       'techo'),
+                ('Art. 55 inc. c LML — 67% de IPC + 3%', r55['piso_67'],    'piso'),
             ], key=lambda x: -x[1])
             filas_55_html = "".join(
-                f"<tr style='background:{'#c0392b' if k==aplica else '#f5f5f5'};color:{'white' if k==aplica else 'black'}'>"
+                f"<tr style='background:{'#4a8fa8' if k==aplica else '#f5f5f5'};color:{'white' if k==aplica else 'black'}'>"
                 f"<td>{lbl}{' ✓ APLICA' if k==aplica else ''}</td>"
                 f"<td class='num' style='font-weight:700'>{formato_moneda(v)}</td></tr>"
                 for lbl, v, k in filas_55
@@ -436,7 +436,7 @@ with tab_despidos:
         st.markdown("---")
 
         # Renglones de color
-        renglones_color([('IPC + 3% (Art. 276 LCT)', ipc['total'])])
+        st.markdown(f"<div style='background:#8e6f9e;padding:8px 16px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center'><span style='font-weight:600;color:white;font-size:13px'>IPC + 3% (Art. 276 LCT conf. Art. 54 LML)</span><span style='font-family:monospace;font-size:16px;font-weight:800;color:white'>{formato_moneda(ipc['total'])}</span></div>", unsafe_allow_html=True)
 
         # Art. 55
         st.markdown("---")
@@ -460,12 +460,12 @@ with tab_despidos:
                 for c, m in r['rubros'].items() if m > 0
             )
             filas_55_d = sorted([
-                ('Tasa Pasiva BCRA (inc. a)', r55['tasa_pasiva'], 'tasa_pasiva'),
-                ('IPC + 3% — techo (inc. b)', r55['ipc_3'],       'techo'),
-                ('67% IPC+3% — piso (inc. c)', r55['piso_67'],    'piso'),
+                ('Tasa Pasiva BCRA (Art. 55 inc. a LML conf. Res. 45/26 BCRA)', r55['tasa_pasiva'], 'tasa_pasiva'),
+                ('IPC + 3% — techo (Art. 55 inc. b LML)', r55['ipc_3'],       'techo'),
+                ('Art. 55 inc. c LML — 67% de IPC + 3%', r55['piso_67'],    'piso'),
             ], key=lambda x: -x[1])
             filas_55_d_html = "".join(
-                f"<tr style='background:{'#c0392b' if k==aplica_d else '#f5f5f5'};color:{'white' if k==aplica_d else 'black'}'>"
+                f"<tr style='background:{'#4a8fa8' if k==aplica_d else '#f5f5f5'};color:{'white' if k==aplica_d else 'black'}'>"
                 f"<td>{lbl}{' ✓ APLICA' if k==aplica_d else ''}</td>"
                 f"<td class='num' style='font-weight:700'>{formato_moneda(v)}</td></tr>"
                 for lbl, v, k in filas_55_d
@@ -704,3 +704,109 @@ Se aplican los mismos métodos descriptos en el punto I.5, tomando como fecha de
 
 *Sistema desarrollado para el Tribunal de Trabajo N° 2 de Quilmes.*
 """)
+
+    st.markdown("---")
+    if st.button("🖨️ Imprimir — Información para peritos y abogados", key="btn_pdf_info"):
+        st.session_state["mostrar_pdf_info"] = True
+
+    if st.session_state.get("mostrar_pdf_info"):
+        hoy = date.today().strftime("%d/%m/%Y")
+        html_info = f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+@page {{size:A4;margin:2cm}}
+@media print {{.no-print {{display:none}} body {{background:white}}}}
+* {{box-sizing:border-box;margin:0;padding:0}}
+body {{font-family:Arial,sans-serif;font-size:10px;background:#eee;padding:12px;line-height:1.5}}
+.container {{background:white;padding:24px;max-width:760px;margin:0 auto}}
+h1 {{font-size:15px;text-align:center;border-bottom:3px solid #000;padding-bottom:8px;margin-bottom:14px;text-transform:uppercase}}
+h2 {{font-size:11px;font-weight:700;margin:16px 0 5px 0;text-transform:uppercase;border-left:4px solid #000;padding-left:8px}}
+h3 {{font-size:10px;font-weight:700;margin:10px 0 4px 0}}
+p {{margin-bottom:5px;font-size:9.5px;text-align:justify}}
+.formula {{background:#f5f5f5;border-left:3px solid #333;padding:5px 10px;margin:5px 0;font-family:monospace;font-size:8.5px}}
+.nota {{background:#fff8e1;border:1px solid #ccc;padding:5px 10px;margin:7px 0;font-size:9px}}
+.alerta {{background:#ffeaea;border:1px solid #c00;padding:5px 10px;margin:7px 0;font-size:9px}}
+ul {{margin:3px 0 7px 16px}}
+li {{font-size:9.5px;margin-bottom:2px}}
+.fuente {{font-size:8px;color:#555;margin-top:2px}}
+table {{width:100%;border-collapse:collapse;margin:7px 0}}
+td,th {{padding:4px 7px;border:1px solid #ccc;font-size:8.5px;vertical-align:top}}
+th {{background:#333;color:#fff;font-weight:600}}
+.footer {{text-align:center;font-size:8px;color:#666;margin-top:16px;border-top:1px solid #ccc;padding-top:6px}}
+.sub {{text-align:center;font-size:8.5px;color:#444;margin-bottom:14px}}
+.btn {{background:#333;color:white;border:none;padding:8px 18px;cursor:pointer;font-size:12px;font-weight:600;margin-bottom:12px}}
+</style></head><body>
+<button class="btn no-print" onclick="window.print()">🖨️ IMPRIMIR / GUARDAR PDF</button>
+<div class="container">
+<h1>Metodología de Cálculo de Indemnizaciones Laborales</h1>
+<div class="sub">Tribunal de Trabajo N° 2 de Quilmes — Información técnica para peritos y abogados<br>Legislación vigente al {hoy}</div>
+
+<h2>I. Indemnización por Accidente de Trabajo — Ley 24.557 (LRT)</h2>
+
+<h3>1. Ingreso Base Mensual (IBM)</h3>
+<p>El art. 12 de la Ley 24.557 define el IBM como el cociente entre las remuneraciones sujetas a cotización de los doce meses anteriores a la primera manifestación invalidante (PMI) y el número de días corridos del período. Los importes por ILP se ajustan semestralmente por el índice RIPTE (art. 8° Ley 24.557).</p>
+
+<h3>2. Fórmula indemnizatoria — art. 14 ap. 2 inc. a) Ley 24.557</h3>
+<p>Para IPP definitiva (porcentaje igual o inferior al 50%):</p>
+<div class="formula">C = IBM × 53 × (65 / edad) × (incapacidad / 100)</div>
+<ul>
+<li><b>53:</b> multiplicador legal (art. 14 ap. 2 inc. a LRT conf. Dec. 1278/2000)</li>
+<li><b>65:</b> edad de referencia legal | <b>edad:</b> del damnificado a la fecha de la PMI</li>
+</ul>
+
+<h3>3. Pisos indemnizatorios (SRT)</h3>
+<p>La SRT establece periódicamente el piso mínimo por el porcentaje de ILP. Para marzo–agosto 2026: <b>$ 97.502.420</b> por el porcentaje de ILP (Res. SRT 15/2026). Se aplica el mayor entre el capital fórmula y el piso proporcional a la incapacidad.</p>
+
+<h3>4. Adicional art. 3 Ley 26.773</h3>
+<p>El art. 3 de la Ley 26.773 prevé un adicional del <b>20%</b> sobre la indemnización. Su procedencia depende de las circunstancias del caso y la jurisprudencia aplicable.</p>
+
+<h3>5. Actualización e intereses</h3>
+<p><b>5.1. IPC + 3% anual simple — Art. 276 LCT (conf. art. 54 Ley 27.802)</b></p>
+<p>Los créditos laborales se actualizan por el IPC — Nivel General (INDEC), con más una tasa de interés pura del 3% anual desde que cada suma es debida hasta el efectivo pago:</p>
+<div class="formula">Capital actualizado = C × (IPC_cálculo / IPC_PMI)
+Interés = Capital actualizado × 0,03 × (días / 365)
+Total   = Capital actualizado + Interés</div>
+<p>Para períodos anteriores a diciembre de 2016 se empalma con el CER (BCRA): CER hasta noviembre de 2016, IPC desde diciembre de 2016 en adelante.</p>
+<p class="fuente">Fuentes: INDEC (indec.gob.ar) | CER diario BCRA (bcra.gob.ar/archivos/Pdfs/PublicacionesEstadisticas/diar_cer.xls)</p>
+
+<p><b>5.2. Tasa Activa BNA — Art. 12 inc. b) LRT conf. art. 11 Ley 27.348</b></p>
+<p>Interés equivalente al promedio de la tasa activa cartera general nominal anual vencida a 30 días del BNA, aplicada en interés simple proporcional a los días de cada mes:</p>
+<div class="formula">Total = Capital × (1 + Σ(tasa_mes_i × días_período_i / días_mes_i) / 100)</div>
+<p class="fuente">Fuente: Banco de la Nación Argentina — cartera general, nominal anual, vencida a 30 días</p>
+
+<h3>6. Art. 55 Ley 27.802 — Régimen transitorio para juicios en trámite al 6/3/2026</h3>
+<table>
+<tr><th>Inciso</th><th>Concepto</th><th>Fórmula</th></tr>
+<tr><td><b>a)</b></td><td>Tasa Pasiva BCRA</td><td><code>i = ((100 + Tm) / (100 + T0) − 1) × 100</code><br>T0: serie del día anterior al inicio; Tm: día de cierre (Res. BCRA 45/26)</td></tr>
+<tr><td><b>b)</b></td><td>IPC + 3% — techo</td><td>Ídem punto 5.1. Si la Tasa Pasiva supera este valor, se aplica este techo.</td></tr>
+<tr><td><b>c)</b></td><td>67% de IPC + 3% — piso</td><td><code>Total_piso = Total_IPC × 0,67</code>. Si la Tasa Pasiva es inferior, se aplica este piso.</td></tr>
+</table>
+<div class="nota">Se exponen los tres valores para que el juez pueda apartarse de la banda legal por razones de inconstitucionalidad. Existe jurisprudencia que declara inconstitucional el art. 55 por vulnerar el principio protectorio (art. 9 LCT).</div>
+<p class="fuente">Dataset Tasa Pasiva: diar_ind.xls — BCRA | Calculadora oficial: bcra.gob.ar/calculadora-intereses-creditos-laborales-judicializados</p>
+
+<h2>II. Despido sin Causa — Ley 20.744 (LCT)</h2>
+
+<h3>1. Rubros liquidados</h3>
+<table>
+<tr><th>Concepto</th><th>Norma</th><th>Fórmula</th></tr>
+<tr><td>Antigüedad</td><td>Art. 245</td><td>salario × años (fracción &gt; 3 meses = año completo; mínimo 1 año)</td></tr>
+<tr><td>Sustitutiva de preaviso</td><td>Art. 232</td><td>salario × 1 (hasta 5 años) o × 2 (&gt; 5 años) — si no fue otorgado</td></tr>
+<tr><td>SAC s/ preaviso</td><td>Art. 156</td><td>preaviso / 12</td></tr>
+<tr><td>Días trabajados del mes</td><td>Art. 103</td><td>(salario / días_del_mes) × día_del_despido</td></tr>
+<tr><td>Integración mes de despido</td><td>Art. 233</td><td>(salario / días_del_mes) × días_restantes — si el despido no opera el último día</td></tr>
+<tr><td>SAC s/ integración</td><td>Art. 156</td><td>integración / 12</td></tr>
+<tr><td>SAC proporcional</td><td>Art. 156</td><td>(salario / 365) × días_trabajados_en_semestre</td></tr>
+<tr><td>Vacaciones no gozadas</td><td>Art. 156</td><td>(salario / 25) × días_vac — 14 d (&lt;5 a) | 21 d (5–10) | 28 d (10–20) | 35 d (&gt;20)</td></tr>
+<tr><td>SAC s/ vacaciones</td><td>Art. 156</td><td>vacaciones / 12</td></tr>
+</table>
+
+<div class="alerta"><b>Importante:</b> El sistema no calcula multas ni agravamientos indemnizatorios (arts. 8, 9 y 15 Ley 24.013; art. 2 Ley 25.323; arts. 80 y 132 bis LCT, entre otros). Deben ser adicionados por el operador judicial según las circunstancias de cada caso.</div>
+
+<h3>2. Actualización e intereses</h3>
+<p>Mismos métodos que en LRT, tomando como fecha de origen la del <b>despido</b>: IPC + 3% anual simple (art. 276 LCT / art. 54 Ley 27.802) y Art. 55 Ley 27.802 con sus tres valores.</p>
+
+<div class="footer">
+Tribunal de Trabajo N° 2 de Quilmes — Generado el {hoy}<br>
+Documento de carácter informativo. Los cálculos definitivos surgen de la resolución judicial correspondiente.
+</div>
+</div></body></html>"""
+        st.components.v1.html(html_info, height=900, scrolling=True)

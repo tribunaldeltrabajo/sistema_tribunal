@@ -66,7 +66,7 @@ def cargar_datasets():
 
 
 # ─────────────────────────────────────────────
-# MOTOR IPC/CER + 3%
+# MOTOR IPC + 3%
 # ─────────────────────────────────────────────
 
 def actualizar_ipc_cer(monto, fecha_origen, fecha_calculo):
@@ -293,7 +293,7 @@ def texto_sentencia(r):
             f"el expediente es el que se expone en los guarismos obrantes en autos. "
             f"Histórico al {f_pmi}: {formato_moneda(r['capital_total'])}; "
             f"Tasa Act. BNA: {formato_moneda(tasa['total'])}; "
-            f"CER+3%: {formato_moneda(ipc['total'])}."
+            f"IPC+3%: {formato_moneda(ipc['total'])}."
         )
     else:
         bloque_comparativo = (
@@ -307,7 +307,7 @@ def texto_sentencia(r):
             f"expone en los guarismos obrantes en autos. "
             f"Histórico al {f_pmi}: {formato_moneda(r['capital_total'])}; "
             f"Tasa Act. BNA: {formato_moneda(tasa['total'])}; "
-            f"CER+3%: {formato_moneda(ipc['total'])}."
+            f"IPC+3%: {formato_moneda(ipc['total'])}."
         )
 
     return bloque_formula + "\n\n" + bloque_comparativo
@@ -477,26 +477,28 @@ if 'rel_res' in st.session_state:
 
     # Ordenados de mayor a menor (sin CER)
     principales = sorted([
-        ('IPC + 3%',          ipc['total'],   '#c0392b'),
-        ('Tasa Activa BNA',   tasa['total'],  '#1a5276'),
-        ('Art. 55 Ley 27802', art55,          '#7d6608'),
-        ('Tasa Pasiva BCRA',  tp_total,       '#1e8449'),
+        ('IPC + 3% (Art. 276 LCT conf. Art. 54 LML)',          ipc['total'],   '#4a9e9e'),
+        ('Tasa Activa BNA (Art. 12 inc. b LRT conf. Art. 11 Ley 27.348)',   tasa['total'],  '#c8956a'),
+        ('Art. 55 inc. c LML — 67% de IPC + 3%', art55,          '#c8956a'),
+        ('Tasa Pasiva BCRA (Art. 55 inc. a LML conf. Res. 45/26 BCRA)',  tp_total,       '#9c82ae'),
     ], key=lambda x: -x[1])
 
+    _colores_pos = ['#4a9e9e', '#6a9e7a', '#c8956a', '#9c82ae']
     st.markdown("---")
-    for label, monto, color in principales:
+    for _i, (_lbl, _val, _c) in enumerate(principales):
+        _col = _colores_pos[_i] if _i < len(_colores_pos) else '#9c82ae'
         st.markdown(
-            f"<div style='background:{color};padding:8px 16px;margin-bottom:4px;"
+            f"<div style='background:{_col};padding:8px 16px;margin-bottom:4px;"
             f"display:flex;justify-content:space-between;align-items:center'>"
-            f"<span style='font-weight:600;color:white;font-size:13px'>{label}</span>"
-            f"<span style='font-family:monospace;font-size:16px;font-weight:800;color:white'>{formato_moneda(monto)}</span>"
+            f"<span style='font-weight:600;color:white;font-size:13px'>{_lbl}</span>"
+            f"<span style='font-family:monospace;font-size:16px;font-weight:800;color:white'>{formato_moneda(_val)}</span>"
             f"</div>",
             unsafe_allow_html=True
         )
     # CER siempre último como referencia
     if cer_total:
         st.markdown(
-            f"<div style='background:#6c3483;padding:8px 16px;margin-bottom:4px;"
+            f"<div style='background:#7b5ea8;padding:8px 16px;margin-bottom:4px;"
             f"display:flex;justify-content:space-between;align-items:center'>"
             f"<span style='font-weight:600;color:white;font-size:13px'>CER + 3% (referencia)</span>"
             f"<span style='font-family:monospace;font-size:16px;font-weight:800;color:white'>{formato_moneda(cer_total)}</span>"
@@ -525,7 +527,7 @@ if 'rel_res' in st.session_state:
             ('tp',    tp_tot),
         ], key=lambda x: -x[1])
 
-        labels = {'ipc': 'IPC + 3%', 'tasa': 'Tasa Activa BNA', 'art55': 'Art. 55 Ley 27802 (67%)', 'tp': 'Tasa Pasiva BCRA'}
+        labels = {'ipc': 'IPC + 3% (Art. 276 LCT conf. Art. 54 LML)', 'tasa': 'Tasa Activa BNA (Art. 12 inc. b LRT conf. Art. 11 Ley 27.348)', 'art55': 'Art. 55 Ley 27802 (67%)', 'tp': 'Tasa Pasiva BCRA (Art. 55 inc. a LML conf. Res. 45/26 BCRA)'}
         subtotales = {'ipc': ipc['total'], 'tasa': tasa['total'], 'art55': art55, 'tp': tp_tot}
         for idx, (variante, _) in enumerate(variantes_liq):
             texto_var, total_final = texto_liquidacion(r, caratula, variante)
