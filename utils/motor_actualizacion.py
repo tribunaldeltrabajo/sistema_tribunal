@@ -34,6 +34,24 @@ PATH_TP_XLS    = os.path.join(DATA_DIR, "diar_ind.xls")
 
 FECHA_INICIO_IPC = date(2016, 12, 1)
 
+# ─────────────────────────────────────────────
+# LABELS Y COLORES CENTRALIZADOS
+# ─────────────────────────────────────────────
+LABEL_IPC       = 'IPC + 3% (Art. 276 LCT conf. Art. 54 LML)'
+LABEL_TASA_ACT  = 'Tasa Activa BNA (Art. 12 inc. b LRT conf. Art. 11 Ley 27.348)'
+LABEL_ART55_A   = 'Tasa Pasiva BCRA (Art. 55 inc. a LML conf. Res. 45/26 BCRA)'
+LABEL_ART55_B   = 'IPC + 3% — techo (Art. 55 inc. b LML)'
+LABEL_ART55_C   = 'Art. 55 inc. c LML — 67% de IPC + 3%'
+LABEL_CER       = 'CER + 3% (valor de referencia inflación)'
+LABEL_CER_BCRA_B = 'CER + 3% — techo BCRA (Art. 55 inc. b LML)'
+LABEL_CER_BCRA_C = 'Art. 55 inc. c LML — 67% de CER + 3%'
+
+# Colores por módulo
+COLOR_AUDIENCIAS = {'ipc': '#4a8fa8', 'tasa': '#8e6f9e', 'gris': '#a0a8b0'}
+COLOR_RELATORIA  = {'ipc': '#5ba3b8', 'tasa': '#9c82ae', 'art55': '#6a9e7a',
+                    'tp': '#b8836a',  'cer':  '#9a9eaa'}
+COLOR_ACTUALIZACION = {'ipc': '#b8952a', 'tasa': '#7b9e87', 'cer': '#9a9eaa'}
+
 
 def redondear(v):
     return Decimal(str(v)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
