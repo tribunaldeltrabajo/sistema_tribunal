@@ -102,7 +102,7 @@ _max_val = max(r55_show['ipc_3'], r55_show['piso_67'], r55_show['tasa_pasiva'])
 for label, valor, key in filas_55_sorted:
     es_aplica = (key == aplica)
     bg = '#b8952a' if valor == _max_val else ('#7b9e87' if key == 'tasa_pasiva' else '#9a9eaa')
-    marca = " ✓ APLICA" if es_aplica else ""
+    marca = "" if es_aplica else ""
     st.markdown(
         f"<div style='background:{bg};padding:7px 16px;margin-bottom:3px;"
         f"display:flex;justify-content:space-between;align-items:center;border-radius:4px'>"
@@ -195,7 +195,7 @@ with tab_liq:
     st.markdown("**Art. 55 Ley 27.802 — texto para copiar**")
     txt_55 = ""
     for label, valor, key in filas_55_sorted:
-        marca = " ✓ APLICA" if key == aplica else ""
+        marca = "" if key == aplica else ""
         txt_55 += f"{label}{marca}\n{formato_moneda(valor)}\n"
     st.text_area("", txt_55, height=160, key="ta_55_copia")
 
@@ -259,7 +259,24 @@ with tab_liq:
                 f"{formato_moneda(subtotal - cap)}",
             ]
 
-        return "\n".join(lineas) + f"\nSUBTOTAL {formato_moneda(subtotal)}"
+        tj   = float(redondear(Decimal(str(subtotal)) * Decimal('0.022')))
+        caja = float(redondear(Decimal(str(tj)) * Decimal('0.05')))
+        total_final = float(redondear(Decimal(str(subtotal)) + Decimal(str(tj)) + Decimal(str(caja))))
+        cuerpo = "\n".join(lineas)
+
+        return (
+            f"Quilmes, en la fecha en que se suscribe con firma digital (Ac. SCBA. 3975/20).\n"
+            f"LIQUIDACION que practica la Actuaria en el presente expediente.\n\n"
+            f"{cuerpo}\n"
+            f"SUBTOTAL {formato_moneda(subtotal)}\n\n"
+            f"*Tasa de Justicia (2,2%) {formato_moneda(tj)} *\n"
+            f"Sobretasa Contribución Caja de Abogados (5% de Tasa) {formato_moneda(caja)}\n"
+            f"TOTAL {formato_moneda(total_final)}\n"
+            f"Importa la presente liquidación la suma de {numero_a_letras(total_final)}-\n"
+            f"De la liquidación practicada, traslado a las partes por el plazo de cinco (5) días, "
+            f"bajo apercibimiento de tenerla por consentida (art 59 de la Ley 15.057 - RC 1840/24 SCBA) "
+            f"Notifíquese.-"
+        )
 
     variantes_ord = sorted([
         ('ipc',   r['total'],             'IPC + 3% (Art. 276 LCT conf. Art. 54 LML)'),
@@ -271,7 +288,7 @@ with tab_liq:
     for var, val, lbl in variantes_ord:
         st.markdown(f"**{lbl} — {formato_moneda(val)}**")
         txt = texto_liq_act(var)
-        st.text_area("", txt, height=max(160, txt.count('\n') * 22 + 60), key=f"ta_liq_act_{var}")
+        st.text_area("", txt, height=max(300, txt.count('\n') * 28 + 100), key=f"ta_liq_act_{var}")
         st.markdown("")
 
 # ════════════════════════════════════════════
@@ -342,7 +359,7 @@ th {{background:#333;color:#fff;font-weight:600;text-align:left}}
 <table>
 <tr><th>Concepto</th><th class="num">Total</th></tr>
 {"".join(
-    f'<tr class="{"aplica" if key==aplica else ""}"><td>{label}{" ✓ APLICA" if key==aplica else ""}</td><td class="num">{formato_moneda(valor)}</td></tr>'
+    f'<tr class="{"aplica" if key==aplica else ""}"><td>{label}{"" if key==aplica else ""}</td><td class="num">{formato_moneda(valor)}</td></tr>'
     for label, valor, key in filas_55_sorted
 )}
 </table>
