@@ -31,6 +31,7 @@ PATH_IPC       = os.path.join(DATA_DIR, "dataset_ipc.csv")
 PATH_CER_XLS   = os.path.join(DATA_DIR, "diar_cer.xls")
 PATH_TASA      = os.path.join(DATA_DIR, "tasas_activa_bna.csv")
 PATH_TP_XLS    = os.path.join(DATA_DIR, "diar_ind.xls")
+PATH_RIPTE     = os.path.join(DATA_DIR, "dataset_ripte.csv")
 
 FECHA_INICIO_IPC = date(2016, 12, 1)
 
@@ -45,6 +46,7 @@ LABEL_ART55_C   = 'Art. 55 inc. c LML — 67% de IPC + 3%'
 LABEL_CER       = 'CER + 3% (valor de referencia inflación)'
 LABEL_CER_BCRA_B = 'CER + 3% — techo BCRA (Art. 55 inc. b LML)'
 LABEL_CER_BCRA_C = 'Art. 55 inc. c LML — 67% de CER + 3%'
+LABEL_RIPTE     = 'RIPTE + 6% (Art. 8° Ley 24.557)'
 
 # Colores por módulo
 COLOR_AUDIENCIAS = {'ipc': '#4a8fa8', 'tasa': '#8e6f9e', 'gris': '#a0a8b0'}
@@ -67,6 +69,29 @@ def cargar_ipc() -> pd.DataFrame:
     df['fecha'] = pd.to_datetime(df['periodo']).dt.date
     df['indice'] = pd.to_numeric(df['indice'], errors='coerce')
     return df.dropna(subset=['fecha','indice']).sort_values('fecha').reset_index(drop=True)
+
+
+def cargar_ripte() -> pd.DataFrame:
+    """
+    Lee dataset_ripte.csv (año, mes en texto, indice_ripte, variacion_mensual, monto_en_pesos).
+    Devuelve DataFrame ordenado ascendente por fecha, con columna 'fecha' = primer día del mes
+    e 'indice' = indice_ripte.
+    """
+    _meses_map = {
+        'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5, 'junio': 6,
+        'julio': 7, 'agosto': 8, 'septiembre': 9, 'octubre': 10, 'noviembre': 11, 'diciembre': 12,
+    }
+    df = pd.read_csv(PATH_RIPTE)
+    df.columns = df.columns.str.strip().str.lower()
+    df['mes_txt'] = df['mes'].astype(str).str.strip().str.lower()
+    df['mes_num'] = df['mes_txt'].map(_meses_map)
+    df['anio']    = pd.to_numeric(df['año'], errors='coerce').astype('Int64')
+    df['fecha']   = df.apply(
+        lambda r: date(int(r['anio']), int(r['mes_num']), 1)
+        if pd.notna(r['anio']) and pd.notna(r['mes_num']) else None, axis=1
+    )
+    df['indice'] = pd.to_numeric(df['indice_ripte'], errors='coerce')
+    return df.dropna(subset=['fecha', 'indice']).sort_values('fecha').reset_index(drop=True)
 
 
 def cargar_cer_csv() -> pd.DataFrame:
@@ -146,6 +171,11 @@ def _get_ipc(df_ipc, fecha):
     sub = df_ipc[df_ipc['fecha'] <= fm]
     return float(sub.iloc[-1]['indice']) if not sub.empty else 100.0
 
+def _get_ripte(df_ripte, fecha):
+    fm = date(fecha.year, fecha.month, 1)
+    sub = df_ripte[df_ripte['fecha'] <= fm]
+    return float(sub.iloc[-1]['indice']) if not sub.empty else float(df_ripte.iloc[0]['indice'])
+
 def _get_cer_csv(df_cer, fecha):
     fm = date(fecha.year, fecha.month, 1)
     sub = df_cer[df_cer['fecha'] <= fm]
@@ -217,6 +247,43 @@ def calcular_ipc_cer_3(monto, fecha_origen, fecha_calculo, df_ipc, df_cer):
         'interes_3':        interes_3,
         'total':            total,
         'art55_piso':       art55_piso,
+    }
+
+
+# ─────────────────────────────────────────────
+# MOTOR 1B — RIPTE + 6% SIMPLE
+# ─────────────────────────────────────────────
+
+def calcular_ripte_6(monto, fecha_origen, fecha_calculo, df_ripte):
+    """
+    Actualización por índice RIPTE + 6% anual simple.
+    Mismo mecanismo que IPC+3%, pero con índice RIPTE e interés del 6%.
+    Capital actualizado = monto × (RIPTE_calculo / RIPTE_origen)
+    Interés = Capital actualizado × 0,06 × (días/365)
+    """
+    ripte_origen        = _get_ripte(df_ripte, fecha_origen)
+    ripte_calculo        = _get_ripte(df_ripte, fecha_calculo)
+    ripte_calculo_fecha  = df_ripte[df_ripte['fecha'] <= date(fecha_calculo.year, fecha_calculo.month, 1)].iloc[-1]['fecha']
+
+    coef = ripte_calculo / ripte_origen if ripte_origen > 0 else 1.0
+    capital_indexado = float(redondear(Decimal(str(monto)) * Decimal(str(coef))))
+    dias = (fecha_calculo - fecha_origen).days
+    interes_6 = float(redondear(
+        Decimal(str(capital_indexado)) * Decimal('0.06') * Decimal(str(dias)) / Decimal('365')
+    ))
+    total = float(redondear(Decimal(str(capital_indexado)) + Decimal(str(interes_6))))
+
+    return {
+        'ripte_origen':        ripte_origen,
+        'ripte_origen_fecha':  fecha_origen,
+        'ripte_calculo':       ripte_calculo,
+        'ripte_calculo_fecha': ripte_calculo_fecha,
+        'coef':                coef,
+        'pct_variacion':       (coef - 1) * 100,
+        'capital_indexado':    capital_indexado,
+        'dias':                dias,
+        'interes_6':           interes_6,
+        'total':               total,
     }
 
 
@@ -392,6 +459,48 @@ def calcular_tasa_activa(monto, fecha_origen, fecha_calculo, df_tasa):
 
 
 # ─────────────────────────────────────────────
+# CAPITALIZACIÓN DE INTERESES — ART. 770 INC. B CCyC
+# ─────────────────────────────────────────────
+
+def calcular_con_capitalizacion(monto, fecha_origen, fecha_demanda, fecha_calculo, datos, tipo='activa'):
+    """
+    Capitaliza intereses al momento de interposición de demanda (art. 770 inc. b CCyC).
+
+    Tramo 1: fecha_origen → fecha_demanda, interés simple sobre el capital histórico.
+    Capital capitalizado = capital histórico + interés del tramo 1.
+    Tramo 2: fecha_demanda → fecha_calculo, interés simple sobre el capital capitalizado.
+
+    tipo: 'activa' (requiere datos=df_tasa) o 'pasiva' (requiere datos=datos_tp).
+    """
+    if not (fecha_origen < fecha_demanda < fecha_calculo):
+        raise ValueError("Las fechas deben cumplir: origen < demanda < cálculo")
+
+    if tipo == 'activa':
+        r1 = calcular_tasa_activa(monto, fecha_origen, fecha_demanda, datos)
+        capital_capitalizado = r1['total']
+        r2 = calcular_tasa_activa(capital_capitalizado, fecha_demanda, fecha_calculo, datos)
+    elif tipo == 'pasiva':
+        r1 = calcular_tasa_pasiva(monto, fecha_origen, fecha_demanda, datos)
+        capital_capitalizado = r1['total']
+        r2 = calcular_tasa_pasiva(capital_capitalizado, fecha_demanda, fecha_calculo, datos)
+    else:
+        raise ValueError("tipo debe ser 'activa' o 'pasiva'")
+
+    return {
+        'capital_historico':      monto,
+        'tramo1':                 r1,
+        'capital_capitalizado':   capital_capitalizado,
+        'interes_tramo1':         capital_capitalizado - monto,
+        'tramo2':                 r2,
+        'total':                  r2['total'],
+        'fecha_origen':           fecha_origen,
+        'fecha_demanda':          fecha_demanda,
+        'fecha_calculo':          fecha_calculo,
+        'tipo':                   tipo,
+    }
+
+
+# ─────────────────────────────────────────────
 # CARGA UNIFICADA
 # ─────────────────────────────────────────────
 
@@ -401,6 +510,7 @@ def cargar_todo():
         'df_ipc':       cargar_ipc(),
         'df_cer':       cargar_cer_csv(),
         'df_tasa':      cargar_tasa(),
+        'df_ripte':     cargar_ripte(),
         'datos_cer_xls': cargar_cer_xls(),
         'datos_tp':     cargar_tasa_pasiva(),
     }
