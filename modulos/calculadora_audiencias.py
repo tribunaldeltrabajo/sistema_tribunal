@@ -17,7 +17,8 @@ from utils.funciones_comunes import (
 )
 from utils.motor_actualizacion import (
     cargar_todo, calcular_ipc_cer_3,
-    calcular_bcra, calcular_art55, calcular_tasa_activa
+    calcular_bcra, calcular_art55, calcular_tasa_activa,
+    calcular_con_capitalizacion
 )
 
 mostrar_sidebar_navegacion('audiencias')
@@ -52,6 +53,8 @@ except Exception as e:
 if 'desp_res' in st.session_state and 'tasa' in st.session_state.get('desp_res', {}):
     del st.session_state['desp_res']  # limpiar versión vieja con tasa
 if 'lrt_res' in st.session_state and 'tasa' not in st.session_state.get('lrt_res', {}):
+    del st.session_state['lrt_res']
+if 'lrt_res' in st.session_state and 'capitaliza' not in st.session_state.get('lrt_res', {}):
     del st.session_state['lrt_res']
 
 def get_piso(fecha_pmi):
@@ -162,11 +165,22 @@ with tab_lrt:
             max_value=100.0, value=30.0, step=0.5, format="%.2f", key="lrt_inc")
 
     art3 = st.checkbox("Incluir 20% art. 3 Ley 26.773", value=True, key="lrt_art3")
+
+    c_cap1, c_cap2 = st.columns([1, 2])
+    with c_cap1:
+        lrt_capitaliza = st.checkbox("Capitaliza intereses (Art. 770 inc. b CCyC)", value=False, key="lrt_capitaliza")
+    with c_cap2:
+        lrt_fecha_demanda = st.date_input("Fecha de interposición de demanda", value=date(2022, 1, 1),
+            min_value=date(2002,1,1), max_value=date.today(),
+            format="DD/MM/YYYY", key="lrt_fecha_demanda", disabled=not lrt_capitaliza)
+
     calcular_lrt = st.button("⚡ CALCULAR", use_container_width=True, type="primary", key="btn_lrt")
 
     if calcular_lrt:
         if pmi >= fecha_calculo_lrt:
             st.error("La fecha PMI debe ser anterior a la fecha de cálculo.")
+        elif lrt_capitaliza and not (pmi < lrt_fecha_demanda < fecha_calculo_lrt):
+            st.error("La fecha de interposición de demanda debe estar entre la PMI y la fecha de cálculo.")
         else:
             capital_formula = float(redondear(
                 Decimal(str(ibm)) * 53
@@ -188,7 +202,10 @@ with tab_lrt:
             capital_total = float(redondear(Decimal(str(capital_base)) + Decimal(str(adicional_20))))
 
             res_ipc  = calcular_ipc_cer_3(capital_total, pmi, fecha_calculo_lrt, DS['df_ipc'], DS['df_cer'])
-            res_tasa = calcular_tasa_activa(capital_total, pmi, fecha_calculo_lrt, DS['df_tasa'])
+            if lrt_capitaliza:
+                res_tasa = calcular_con_capitalizacion(capital_total, pmi, lrt_fecha_demanda, fecha_calculo_lrt, DS['df_tasa'], tipo='activa')
+            else:
+                res_tasa = calcular_tasa_activa(capital_total, pmi, fecha_calculo_lrt, DS['df_tasa'])
             res_55   = calcular_art55(capital_total, pmi, fecha_calculo_lrt,
                                       DS['df_ipc'], DS['df_cer'], DS['datos_tp'])
 
@@ -199,6 +216,8 @@ with tab_lrt:
                 'ipc': res_ipc, 'tasa': res_tasa, 'art55': res_55,
                 'pmi': pmi, 'fecha_calculo': fecha_calculo_lrt,
                 'ibm': ibm, 'edad': edad, 'incapacidad': incapacidad, 'art3': art3,
+                'capitaliza': lrt_capitaliza,
+                'fecha_demanda': lrt_fecha_demanda if lrt_capitaliza else None,
             }
 
     if 'lrt_res' in st.session_state:
@@ -223,6 +242,19 @@ with tab_lrt:
         for _idx, (_lbl, _val) in enumerate(_vars_lrt):
             _col = '#8e6f9e' if _idx == 0 else '#4a8fa8'
             st.markdown(f"<div style='background:{_col};padding:8px 16px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center'><span style='font-weight:600;color:white;font-size:13px'>{_lbl}</span><span style='font-family:monospace;font-size:16px;font-weight:800;color:white'>{formato_moneda(_val)}</span></div>", unsafe_allow_html=True)
+
+        if r.get('capitaliza'):
+            with st.expander("Detalle de la capitalización de la Tasa Activa (Art. 770 inc. b CCyC)"):
+                f_dem = r['fecha_demanda']
+                st.write(f"**Capital histórico:** {formato_moneda(tasa['capital_historico'])}")
+                st.write(f"**Tramo 1** — desde {r['pmi'].strftime('%d/%m/%Y')} hasta interposición de demanda "
+                         f"({f_dem.strftime('%d/%m/%Y')}): tasa acumulada {tasa['tramo1']['tasa_pct']:.2f}%")
+                st.write(f"**Capital capitalizado al {f_dem.strftime('%d/%m/%Y')}:** "
+                         f"{formato_moneda(tasa['capital_capitalizado'])} "
+                         f"(interés tramo 1: {formato_moneda(tasa['interes_tramo1'])})")
+                st.write(f"**Tramo 2** — desde {f_dem.strftime('%d/%m/%Y')} hasta "
+                         f"{r['fecha_calculo'].strftime('%d/%m/%Y')}: tasa acumulada {tasa['tramo2']['tasa_pct']:.2f}%")
+                st.write(f"**Total final:** {formato_moneda(tasa['total'])}")
 
         # Art. 55
         st.markdown("---")
@@ -308,9 +340,12 @@ th{{background:#333;color:#fff;font-weight:600;text-align:left}}
 <div style="font-size:9px;font-weight:600;margin-bottom:3px">IPC + 3% (Art. 276 LCT)</div>
 <div class="val">{formato_moneda(ipc['total'])}</div>
 </div>
-<h2>Tasa Activa BNA (Art. 12 inc. b LRT conf. Art. 11 Ley 27.348)</h2>
+<h2>Tasa Activa BNA (Art. 12 inc. b LRT conf. Art. 11 Ley 27.348){' — con capitalización Art. 770 inc. b CCyC' if r.get('capitaliza') else ''}</h2>
 <table>
-<tr><td>Tasa acumulada</td><td class="num">{tasa['tasa_pct']:.2f}%</td></tr>
+{f'''<tr><td>Capital histórico</td><td class="num">{formato_moneda(tasa["capital_historico"])}</td></tr>
+<tr><td>Tramo 1 (hasta demanda {r["fecha_demanda"].strftime("%d/%m/%Y")})</td><td class="num">tasa {tasa["tramo1"]["tasa_pct"]:.2f}%</td></tr>
+<tr><td>Capital capitalizado</td><td class="num">{formato_moneda(tasa["capital_capitalizado"])}</td></tr>
+<tr><td>Tramo 2 (desde demanda hasta cálculo)</td><td class="num">tasa {tasa["tramo2"]["tasa_pct"]:.2f}%</td></tr>''' if r.get('capitaliza') else f'''<tr><td>Tasa acumulada</td><td class="num">{tasa["tasa_pct"]:.2f}%</td></tr>'''}
 </table>
 <div class="cap-box">
 <div style="font-size:9px;font-weight:600;margin-bottom:3px">TASA ACTIVA BNA</div>
