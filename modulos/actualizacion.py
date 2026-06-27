@@ -1,30 +1,96 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CALCULADORA DE ACTUALIZACIÓN E INTERESES
+CALCULADORA RELATORÍA
+LRT (Ley 24.557) — Sentencia, Liquidación y Honorarios
 """
 
 import streamlit as st
+import pandas as pd
 from datetime import date, timedelta
-from decimal import Decimal
-import os, sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+from decimal import Decimal, ROUND_HALF_UP
+import os
 from utils.navegacion import mostrar_sidebar_navegacion
-from utils.funciones_comunes import redondear, formato_moneda, numero_a_letras, get_mes_nombre
+from utils.funciones_comunes import (
+    safe_parse_date, redondear, formato_moneda,
+    numero_a_letras, get_mes_nombre
+)
 from utils.motor_actualizacion import (
-    cargar_todo, calcular_ipc_cer_3, calcular_cer_simple,
-    calcular_art55, calcular_bcra, calcular_tasa_activa, calcular_tasa_pasiva,
-    calcular_con_capitalizacion, calcular_ripte_6
+    cargar_todo, calcular_ipc_cer_3, calcular_cer_simple, calcular_art55,
+    calcular_tasa_activa as _calc_tasa, calcular_tasa_pasiva,
+    calcular_con_capitalizacion
 )
 
-mostrar_sidebar_navegacion('actualizacion')
-
-TASA_JUSTICIA  = 0.022
-SOBRETASA_CAJA = 0.05
-
 def mes_anio(fecha):
+    """Devuelve 'Mes AAAA' en español."""
     return f"{get_mes_nombre(fecha.month)} {fecha.year}"
+
+mostrar_sidebar_navegacion('relatoria')
+
+# ─────────────────────────────────────────────
+# RUTAS
+# ─────────────────────────────────────────────
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
+PATH_TASA  = os.path.join(DATA_DIR, "dataset_tasa.csv")
+PATH_PISOS = os.path.join(DATA_DIR, "dataset_pisos.csv")
+PATH_JUS   = os.path.join(DATA_DIR, "Dataset_JUS.csv")
+TASA_JUSTICIA    = 0.022
+SOBRETASA_CAJA   = 0.05
+FACTOR_HONORARIO = 1.31
+TOPE_NETO        = 0.25 / FACTOR_HONORARIO
+
+# ─────────────────────────────────────────────
+# CARGA DE DATASETS
+# ─────────────────────────────────────────────
+
+@st.cache_data
+def cargar_datasets():
+    DS = cargar_todo()
+
+    df_pisos = pd.read_csv(PATH_PISOS)
+    df_pisos.columns = df_pisos.columns.str.strip().str.lower()
+    df_pisos['desde'] = df_pisos['fecha_inicio'].apply(safe_parse_date)
+    df_pisos['hasta'] = df_pisos['fecha_fin'].apply(safe_parse_date)
+    df_pisos['piso']  = pd.to_numeric(df_pisos['monto_minimo'], errors='coerce')
+    df_pisos['resol'] = df_pisos['norma'].astype(str)
+    df_pisos = df_pisos.dropna(subset=['desde','piso']).sort_values('desde').reset_index(drop=True)
+
+    df_jus = pd.read_csv(PATH_JUS)
+    df_jus.columns = df_jus.columns.str.strip()
+    df_jus['FECHA ENTRADA EN VIGENCIA'] = pd.to_datetime(df_jus['FECHA ENTRADA EN VIGENCIA'], dayfirst=True)
+    df_jus['FECHA DE FINALIZACION'] = pd.to_datetime(df_jus['FECHA DE FINALIZACION'], format='%d/%m/%Y', dayfirst=True, errors='coerce')
+    df_jus['VALOR IUS'] = df_jus['VALOR IUS'].astype(str).str.replace('$','').str.replace('.','').str.replace(',','.').str.strip()
+    df_jus['VALOR IUS'] = pd.to_numeric(df_jus['VALOR IUS'], errors='coerce')
+
+    DS['df_pisos'] = df_pisos
+    DS['df_jus']   = df_jus
+    return DS
+
+
+# ─────────────────────────────────────────────
+# MOTOR IPC + 3%
+# ─────────────────────────────────────────────
+
+def actualizar_ipc_cer(monto, fecha_origen, fecha_calculo):
+    return calcular_ipc_cer_3(monto, fecha_origen, fecha_calculo, DS['df_ipc'], DS['df_cer'])
+
+def actualizar_tasa_activa(monto, fecha_origen, fecha_calculo):
+    return _calc_tasa(monto, fecha_origen, fecha_calculo, DS['df_tasa'])
+
+def get_piso(df_pisos, fecha_pmi):
+    candidate = None
+    for _, r in df_pisos.iterrows():
+        d0, d1 = r['desde'], r['hasta']
+        if pd.isna(d1) or d1 is None:
+            if fecha_pmi >= d0:
+                candidate = (float(r['piso']), r['resol'])
+        else:
+            if d0 <= fecha_pmi <= d1:
+                return (float(r['piso']), r['resol'])
+    return candidate if candidate else (None, "")
+
 
 def agregar_tasas(subtotal):
     tj   = float(redondear(Decimal(str(subtotal)) * Decimal(str(TASA_JUSTICIA))))
@@ -32,13 +98,183 @@ def agregar_tasas(subtotal):
     total = float(redondear(Decimal(str(subtotal)) + Decimal(str(tj)) + Decimal(str(caja))))
     return tj, caja, total
 
-def texto_liq_generico(cap_historico, f_origen, f_calc, lineas_cuerpo, subtotal):
-    """Formato exacto de liquidación — idéntico al de relatoría."""
+
+def get_valor_jus(df_jus, fecha):
+    fecha_ts = pd.Timestamp(fecha)
+    reg = df_jus[
+        (df_jus['FECHA ENTRADA EN VIGENCIA'] <= fecha_ts) &
+        ((df_jus['FECHA DE FINALIZACION'] >= fecha_ts) | df_jus['FECHA DE FINALIZACION'].isna())
+    ]
+    if reg.empty:
+        reg = df_jus.iloc[:1]
+    row = reg.iloc[0]
+    return float(row['VALOR IUS']), str(row['ACUERDO'])
+
+
+# ─────────────────────────────────────────────
+# CÁLCULO LRT
+# ─────────────────────────────────────────────
+
+def calcular_lrt(pmi, f_calc, ibm, edad, incapacidad, art3, capitaliza=False, fecha_demanda=None):
+    capital_formula = float(redondear(
+        Decimal(str(ibm)) * 53
+        * (Decimal('65') / Decimal(str(edad)))
+        * (Decimal(str(incapacidad)) / 100)
+    ))
+    piso_monto, piso_norma = get_piso(DS['df_pisos'], pmi)
+    if piso_monto:
+        piso_prop = float(redondear(Decimal(str(piso_monto)) * Decimal(str(incapacidad)) / 100))
+        piso_aplicado = capital_formula < piso_prop
+        capital_base = piso_prop if piso_aplicado else capital_formula
+        piso_txt = (
+            f"Se aplica piso mínimo determinado por la {piso_norma}, que multiplicado por el "
+            f"porcentaje de incapacidad ({incapacidad:.1f}%) alcanza la suma de {formato_moneda(piso_prop)}."
+            if piso_aplicado else
+            f"Dicho monto supera el piso mínimo determinado por la {piso_norma}, que multiplicado "
+            f"por el porcentaje de incapacidad ({incapacidad:.1f}%) alcanza la suma de {formato_moneda(piso_prop)}."
+        )
+    else:
+        capital_base  = capital_formula
+        piso_aplicado = False
+        piso_txt      = "Sin piso disponible para la fecha."
+
+    adicional_20  = float(redondear(Decimal(str(capital_base)) * Decimal('0.20'))) if art3 else 0.0
+    capital_total = float(redondear(Decimal(str(capital_base)) + Decimal(str(adicional_20))))
+
+    res_ipc  = actualizar_ipc_cer(capital_total, pmi, f_calc)
+    res_cer  = calcular_cer_simple(capital_total, pmi, f_calc, DS['datos_cer_xls'])
+
+    if capitaliza and fecha_demanda:
+        res_tasa = calcular_con_capitalizacion(capital_total, pmi, fecha_demanda, f_calc, DS['df_tasa'], tipo='activa')
+        res_tp   = calcular_con_capitalizacion(capital_total, pmi, fecha_demanda, f_calc, DS['datos_tp'], tipo='pasiva')
+    else:
+        res_tasa = actualizar_tasa_activa(capital_total, pmi, f_calc)
+        res_tp   = calcular_tasa_pasiva(capital_total, pmi, f_calc, DS['datos_tp'])
+
+    return {
+        'capital_formula': capital_formula,
+        'capital_base':    capital_base,
+        'piso_aplicado':   piso_aplicado,
+        'piso_txt':        piso_txt,
+        'adicional_20':    adicional_20,
+        'capital_total':   capital_total,
+        'ipc':             res_ipc,
+        'cer':             res_cer,
+        'tasa':            res_tasa,
+        'tp':              res_tp,
+        'pmi':             pmi,
+        'fecha_calculo':   f_calc,
+        'ibm':             ibm,
+        'edad':            edad,
+        'incapacidad':     incapacidad,
+        'art3':            art3,
+        'capitaliza':      capitaliza,
+        'fecha_demanda':   fecha_demanda if capitaliza else None,
+    }
+
+
+# ─────────────────────────────────────────────
+# GENERADORES DE TEXTO
+# ─────────────────────────────────────────────
+
+def texto_liquidacion(r, caratula, variante):
+    ipc  = r['ipc']
+    tasa = r['tasa']
+    f_pmi     = r['pmi'].strftime('%d/%m/%Y')
+    f_calculo = r['fecha_calculo'].strftime('%d/%m/%Y')
+
+    if ipc['metodo'] == 'CER+IPC':
+        linea_act = (
+            f"2. Capital Actualizado mediante CER/IPC "
+            f"(CER {ipc['ipc_origen_fecha'].strftime('%m/%Y')}: {ipc['cer_origen']:.6f} / "
+            f"CER Nov-2016: {ipc['cer_nov2016']:.6f} — Coef. CER: {ipc['coef_cer']:.4f} — "
+            f"IPC base 100 / {ipc['ipc_ultimo_fecha'].strftime('%m/%Y')}: {ipc['ipc_ultimo']:.2f} — "
+            f"Coef. total: {ipc['coef']:.4f} — {ipc['pct_variacion']:.2f}%) "
+            f"{formato_moneda(ipc['capital_indexado'])}"
+        )
+    else:
+        linea_act = (
+            f"2. Capital Actualizado mediante IPC "
+            f"({ipc['ipc_ultimo_fecha'].strftime('%m/%Y')}: {ipc['ipc_ultimo']:.2f} / "
+            f"{ipc['ipc_origen_fecha'].strftime('%m/%Y')}: {ipc['ipc_origen']:.2f} — "
+            f"Coef. {ipc['coef']:.4f} — {ipc['pct_variacion']:.2f}%) "
+            f"{formato_moneda(ipc['capital_indexado'])}"
+        )
+
+    if variante == 'ipc':
+        subtotal = ipc['total']
+        lineas = [
+            f"1. Capital Histórico {formato_moneda(r['capital_total'])}",
+            linea_act,
+            f"3. Interés puro del 3% anual desde {f_pmi} hasta {f_calculo} {formato_moneda(ipc['interes_3'])}",
+        ]
+
+    elif variante == 'tasa':
+        subtotal = tasa['total']
+        if r.get('capitaliza'):
+            f_dem = r['fecha_demanda'].strftime('%d/%m/%Y')
+            lineas = [
+                f"1. Capital Histórico {formato_moneda(r['capital_total'])}",
+                f"2. Intereses Tasa Activa BNA desde {f_pmi} hasta interposición de demanda ({f_dem}) "
+                f"(tasa acumulada: {tasa['tramo1']['tasa_pct']:.2f}%) {formato_moneda(tasa['interes_tramo1'])}",
+                f"3. Capital Capitalizado al {f_dem} (Art. 770 inc. b CCyC) {formato_moneda(tasa['capital_capitalizado'])}",
+                f"4. Intereses Tasa Activa BNA desde {f_dem} hasta {f_calculo} "
+                f"(tasa acumulada: {tasa['tramo2']['tasa_pct']:.2f}%) {formato_moneda(tasa['total'] - tasa['capital_capitalizado'])}",
+            ]
+        else:
+            lineas = [
+                f"1. Capital Histórico {formato_moneda(r['capital_total'])}",
+                f"2. Intereses Tasa Activa BNA desde {f_pmi} hasta {f_calculo} "
+                f"(tasa acumulada: {tasa['tasa_pct']:.2f}%) {formato_moneda(tasa['total'] - r['capital_total'])}",
+            ]
+
+    elif variante == 'cer':
+        cer = r['cer']
+        subtotal = cer['total']
+        lineas = [
+            f"1. Capital Histórico {formato_moneda(r['capital_total'])}",
+            f"2. Capital Actualizado mediante CER "
+            f"({cer['cer_calculo_fecha'].strftime('%d/%m/%Y')}: {cer['cer_calculo']:.6f} / "
+            f"{cer['cer_origen_fecha'].strftime('%d/%m/%Y')}: {cer['cer_origen']:.6f} — "
+            f"Coef. {cer['coef']:.6f} — {cer['pct_variacion']:.2f}%) {formato_moneda(cer['capital_indexado'])}",
+            f"3. Interés puro del 3% anual desde {f_pmi} hasta {f_calculo} {formato_moneda(cer['interes_3'])}",
+        ]
+
+    elif variante == 'tp':
+        tp = r['tp']
+        subtotal = tp['total']
+        if r.get('capitaliza'):
+            f_dem = r['fecha_demanda'].strftime('%d/%m/%Y')
+            lineas = [
+                f"1. Capital Histórico {formato_moneda(r['capital_total'])}",
+                f"2. Intereses Tasa Pasiva BCRA desde {f_pmi} hasta interposición de demanda ({f_dem}) "
+                f"(tasa período: {tp['tramo1']['tasa_pct']:.2f}%) {formato_moneda(tp['interes_tramo1'])}",
+                f"3. Capital Capitalizado al {f_dem} (Art. 770 inc. b CCyC) {formato_moneda(tp['capital_capitalizado'])}",
+                f"4. Intereses Tasa Pasiva BCRA desde {f_dem} hasta {f_calculo} "
+                f"(tasa período: {tp['tramo2']['tasa_pct']:.2f}%) {formato_moneda(tp['total'] - tp['capital_capitalizado'])}",
+            ]
+        else:
+            lineas = [
+                f"1. Capital Histórico {formato_moneda(r['capital_total'])}",
+                f"2. Intereses Tasa Pasiva BCRA desde {f_pmi} hasta {f_calculo} "                f"(T\u2080: {tp['T0']:.6f} / T\u2098: {tp['Tm']:.6f} — tasa período: {tp['tasa_pct']:.2f}%) "                f"{formato_moneda(tp['total'] - r['capital_total'])}",
+            ]
+
+    else:  # art55
+        subtotal = ipc.get('art55_piso', 0.0)
+        lineas = [
+            f"1. Capital Histórico {formato_moneda(r['capital_total'])}",
+            linea_act,
+            f"3. Interés puro del 3% anual desde {f_pmi} hasta {f_calculo} {formato_moneda(ipc['interes_3'])}",
+            f"SUBTOTAL CER + 3% {formato_moneda(ipc['total'])}",
+            f"4. Art. 55 Ley 27802 (67% de IPC+3%) {formato_moneda(subtotal)}",
+        ]
+
     tj, caja, total_final = agregar_tasas(subtotal)
-    cuerpo = "\n".join(lineas_cuerpo)
-    return (
+    cuerpo = "\n".join(lineas)
+
+    texto = (
         f"Quilmes, en la fecha en que se suscribe con firma digital (Ac. SCBA. 3975/20).\n"
-        f"LIQUIDACION que practica la Actuaria en el presente expediente.\n\n"
+        f"LIQUIDACION que practica la Actuaria en el presente expediente caratulado: {caratula}\n\n"
         f"{cuerpo}\n"
         f"SUBTOTAL {formato_moneda(subtotal)}\n\n"
         f"*Tasa de Justicia (2,2%) {formato_moneda(tj)} *\n"
@@ -49,507 +285,415 @@ def texto_liq_generico(cap_historico, f_origen, f_calc, lineas_cuerpo, subtotal)
         f"bajo apercibimiento de tenerla por consentida (art 59 de la Ley 15.057 - RC 1840/24 SCBA) "
         f"Notifíquese.-"
     )
+    return texto, total_final
 
-@st.cache_data
-def _cargar():
-    return cargar_todo()
+
+def texto_sentencia(r):
+    ipc  = r['ipc']
+    tasa = r['tasa']
+
+    art3_txt = (
+        f"20% Art. 3 Ley 26.773: {formato_moneda(r['adicional_20'])}"
+        if r['art3'] else
+        "20% Art. 3 Ley 26.773: no corresponde"
+    )
+
+    bloque_formula = (
+        f"Fórmula:\n"
+        f"Valor de IBM ({formato_moneda(r['ibm'])}) x 53 x 65/edad({r['edad']}) x Incapacidad ({r['incapacidad']:.1f}%)\n"
+        f"Capital calculado: {formato_moneda(r['capital_formula'])}\n"
+        f"{r['piso_txt']}\n"
+        f"{art3_txt}\n"
+        f"Total: {formato_moneda(r['capital_total'])}\n"
+        f"SON {numero_a_letras(r['capital_total'])}"
+    )
+
+    mes_pmi  = get_mes_nombre(r['pmi'].month).lower()
+    anio_pmi = r['pmi'].year
+    if r.get('capitaliza'):
+        pct_tasa_total = (tasa['total'] / tasa['capital_historico'] - 1) * 100
+        pct_tasa = pct_tasa_total
+    else:
+        pct_tasa = tasa['tasa_pct']
+    pct_ipc  = ipc['pct_variacion']
+    f_pmi    = r['pmi'].strftime('%d/%m/%Y')
+
+    if ipc['total'] > tasa['total']:
+        bloque_comparativo = (
+            f"La confrontación entre la tasa activa del Banco de la Nación Argentina prevista en el "
+            f"artículo 12 de la LRT y la variación del IPC correspondiente al período comprendido "
+            f"entre {mes_pmi} de {anio_pmi} y la fecha evidencia, en el caso, la insuficiencia "
+            f"del mecanismo legal para preservar el contenido económico de la prestación. En efecto, "
+            f"mientras la tasa activa acumuló aproximadamente un {pct_tasa:.2f}%, el IPC registrado "
+            f"por el INDEC para idéntico período alcanzó el {pct_ipc:.2f}%. El resultado concreto en "
+            f"el expediente es el que se expone en los guarismos obrantes en autos. "
+            f"Histórico al {f_pmi}: {formato_moneda(r['capital_total'])}; "
+            f"Tasa Act. BNA: {formato_moneda(tasa['total'])}; "
+            f"IPC+3%: {formato_moneda(ipc['total'])}."
+        )
+    else:
+        bloque_comparativo = (
+            f"La confrontación entre la tasa activa del Banco de la Nación Argentina prevista en el "
+            f"artículo 12 de la LRT y la variación del IPC correspondiente al período comprendido "
+            f"entre {mes_pmi} de {anio_pmi} y la fecha no evidencia insuficiencia del mecanismo "
+            f"legal para preservar el contenido económico de la prestación. En efecto, la tasa activa "
+            f"acumuló aproximadamente un {pct_tasa:.2f}%, en tanto el IPC registrado por el INDEC "
+            f"para idéntico período alcanzó el {pct_ipc:.2f}%, siendo en el caso el mecanismo legal "
+            f"constitucionalmente aceptable. El resultado concreto en el expediente es el que se "
+            f"expone en los guarismos obrantes en autos. "
+            f"Histórico al {f_pmi}: {formato_moneda(r['capital_total'])}; "
+            f"Tasa Act. BNA: {formato_moneda(tasa['total'])}; "
+            f"IPC+3%: {formato_moneda(ipc['total'])}."
+        )
+
+    tp = r.get('tp', {})
+    tp_total = tp.get('total', 0.0)
+    piso_67  = ipc.get('art55_piso', 0.0)
+    techo    = ipc['total']
+    activa   = tasa['total']
+
+    pct_act_vs_piso = (1 - (activa / piso_67)) * 100 if piso_67 > 0 else 0.0
+    pct_act_vs_pasiva = (1 - (activa / tp_total)) * 100 if tp_total > 0 else 0.0
+
+    bloque_art55_items = (
+        f"a) Tasa activa cartera general nominal anual vencida a 30 días del Banco de la Nación "
+        f"Argentina (art. 12, inc. 2°, ley 24.557): {formato_moneda(activa)}\n"
+        f"b) Tasa pasiva determinada por el BCRA (art. 55, inc. a), ley 27.802): {formato_moneda(tp_total)}\n"
+        f"c) Piso mínimo legal: 67% de la variación del IPC + 3% (art. 55, inc. c), ley 27.802): "
+        f"{formato_moneda(piso_67)};\n"
+        f"d) Techo máximo legal: variación íntegra del IPC + 3% (art. 55, inc. b), ley 27.802): "
+        f"{formato_moneda(techo)}.\n"
+        f"De esa comparación surge que la tasa activa BNA del ítem a) resulta inferior en más un "
+        f"{pct_act_vs_piso:.2f} % al piso mínimo legal estimado en el ítem c) e incluso en un "
+        f"{pct_act_vs_pasiva:.2f} % a la Tasa pasiva determinada por el BCRA calculada en el ítem b)."
+    )
+
+    return bloque_formula + "\n\n" + bloque_comparativo + "\n\n" + bloque_art55_items
+
+
+# ─────────────────────────────────────────────
+# HONORARIOS
+# ─────────────────────────────────────────────
+
+def calcular_honorarios(monto_juicio, n_auxiliares, valor_jus):
+    """
+    Total con aportes e IVA (x1.31) nunca supera 25% del juicio.
+    Tope neto = 25% / 1.31 = 19.08%.
+    Actor nunca baja de 12% neto. Si aplica piso, auxiliares se prorratean.
+    Mínimos: 7 JUS actor, 3.5 JUS auxiliar.
+    """
+    TOPE_NETO = 0.25 / FACTOR_HONORARIO  # ~19.08%
+    tabla_aux = {0: 0.00, 1: 0.05, 2: 0.04, 3: 0.035, 4: 0.030, 5: 0.025}
+
+    n       = min(n_auxiliares, 5)
+    pct_aux = tabla_aux[n]
+
+    # Actor toma el resto hasta el tope neto
+    pct_actor = TOPE_NETO - pct_aux * n
+
+    if pct_actor < 0.12:
+        # Actor en piso — auxiliares se prorratean para no superar tope
+        pct_actor = 0.12
+        if n > 0:
+            pct_aux = (TOPE_NETO - 0.12) / n
+
+    # Mínimos en JUS
+    minimo_actor = 7   * valor_jus
+    minimo_aux   = 3.5 * valor_jus
+
+    actor_minimo_aplicado = (monto_juicio * pct_actor) < minimo_actor
+    aux_minimo_aplicado   = n > 0 and (monto_juicio * pct_aux) < minimo_aux
+
+    hon_actor_neto = max(monto_juicio * pct_actor, minimo_actor)
+    hon_aux_neto   = max(monto_juicio * pct_aux,   minimo_aux) if n > 0 else 0.0
+
+    pct_actor_real = hon_actor_neto / monto_juicio * 100
+    pct_aux_real   = hon_aux_neto   / monto_juicio * 100 if n > 0 else 0.0
+
+    hon_dem_neto = hon_actor_neto * 0.70
+    pct_dem_real = hon_dem_neto / monto_juicio * 100
+
+    # IVA y aportes por separado
+    IVA      = Decimal('0.21')
+    APORTES  = Decimal('0.10')
+
+    def desglose(neto):
+        n_dec    = Decimal(str(neto))
+        aportes  = float(redondear(n_dec * APORTES))
+        iva      = float(redondear(n_dec * IVA))
+        total    = float(redondear(n_dec + Decimal(str(aportes)) + Decimal(str(iva))))
+        return aportes, iva, total
+
+    actor_ap, actor_iva, actor_total = desglose(hon_actor_neto)
+    dem_ap,   dem_iva,   dem_total   = desglose(hon_dem_neto)
+    aux_ap,   aux_iva,   aux_total   = desglose(hon_aux_neto) if n > 0 else (0.0, 0.0, 0.0)
+
+    actor_jus = round(hon_actor_neto / valor_jus, 2) if valor_jus > 0 else 0
+    dem_jus   = round(hon_dem_neto   / valor_jus, 2) if valor_jus > 0 else 0
+    aux_jus   = round(hon_aux_neto   / valor_jus, 2) if valor_jus > 0 else 0
+
+    total_sin_dem  = hon_actor_neto + hon_aux_neto * n
+    pct_total_real = total_sin_dem / monto_juicio * 100
+
+    return {
+        'actor_neto':   hon_actor_neto, 'actor_total':  actor_total,
+        'actor_pct':    pct_actor_real, 'actor_jus':    actor_jus,
+        'actor_ap':     actor_ap,       'actor_iva':    actor_iva,
+        'dem_neto':     hon_dem_neto,   'dem_total':    dem_total,
+        'dem_pct':      pct_dem_real,   'dem_jus':      dem_jus,
+        'dem_ap':       dem_ap,         'dem_iva':      dem_iva,
+        'aux_neto':     hon_aux_neto,   'aux_total':    aux_total,
+        'aux_pct':      pct_aux_real,   'aux_jus':      aux_jus,
+        'aux_ap':       aux_ap,         'aux_iva':      aux_iva,
+        'n_aux':        n,
+        'total_sin_dem': total_sin_dem,
+        'pct_total':    pct_total_real,
+        'valor_jus':          valor_jus,
+        'actor_min':          actor_minimo_aplicado,
+        'aux_min':            aux_minimo_aplicado,
+    }
+
+
+# ─────────────────────────────────────────────
+# CARGA INICIAL
+# ─────────────────────────────────────────────
 
 try:
-    DS = _cargar()
+    DS = cargar_datasets()
 except Exception as e:
     st.error(f"Error al cargar datasets: {e}")
     st.stop()
 
-st.markdown("# 📈 ACTUALIZACIÓN E INTERESES")
+
+# Limpiar cache de honorarios si viene de versión anterior
+if 'hon_res' in st.session_state and ('actor_min' not in st.session_state.get('hon_res', {}) or 'dem_jus' not in st.session_state.get('hon_res', {})):
+    del st.session_state['hon_res']
+    if 'hon_acuerdo' in st.session_state: del st.session_state['hon_acuerdo']
+    if 'hon_monto_j' in st.session_state: del st.session_state['hon_monto_j']
+
+# ═══════════════════════════════════════════════════════════════
+# ENCABEZADO
+# ═══════════════════════════════════════════════════════════════
+
+st.markdown("# ⚖️ CALCULADORA RELATORÍA — LRT")
 st.markdown("---")
 
-# ── Inputs ──
-c1, c2, c3 = st.columns([2, 1, 1])
+# ─────────────────────────────────────────────
+# INPUTS ÚNICOS
+# ─────────────────────────────────────────────
+
+caratula_input = st.text_input(
+    "Carátula del expediente",
+    key="rel_caratula",
+    placeholder="Apellido c/ Empresa S.A. s/ Accidente de Trabajo"
+)
+
+c1, c2 = st.columns(2)
 with c1:
-    monto = st.number_input("Monto histórico ($)", min_value=0.01,
-        value=1000000.0, step=1000.0, format="%.2f", key="act_monto")
+    pmi_input = st.date_input("Fecha PMI", value=date(2020, 1, 1),
+        min_value=date(2002,1,1), max_value=date.today(),
+        format="DD/MM/YYYY", key="rel_pmi")
 with c2:
-    fecha_ini = st.date_input("Fecha inicial", value=date(2020, 1, 1),
-        min_value=date(1993, 6, 3), max_value=date.today(),
-        format="DD/MM/YYYY", key="act_ini")
+    fcalc_input = st.date_input("Fecha de cálculo", value=date.today(),
+        format="DD/MM/YYYY", key="rel_fcalc")
+
+c3, c4, c5 = st.columns(3)
 with c3:
-    fecha_fin = st.date_input("Fecha final", value=date.today(),
-        min_value=date(1993, 6, 4), max_value=date.today() + timedelta(days=365),
-        format="DD/MM/YYYY", key="act_fin")
-
-c4, c5 = st.columns([1, 2])
+    ibm_input = st.number_input("IBM actualizado ($)", min_value=0.01,
+        value=500000.0, step=1000.0, format="%.2f", key="rel_ibm")
 with c4:
-    capitaliza = st.checkbox("Capitaliza intereses — opcional (Art. 770 inc. b CCyC)", value=False, key="act_capitaliza")
+    edad_input = st.number_input("Edad", min_value=18, max_value=100,
+        value=45, step=1, key="rel_edad")
 with c5:
-    fecha_demanda = st.date_input("Fecha de interposición de demanda", value=date(2022, 1, 1),
-        min_value=date(1993, 6, 4), max_value=date.today(),
-        format="DD/MM/YYYY", key="act_fecha_demanda", disabled=not capitaliza)
+    inc_input = st.number_input("Incapacidad (%)", min_value=0.01,
+        max_value=100.0, value=30.0, step=0.5, format="%.2f", key="rel_inc")
 
-if st.button("⚡ CALCULAR", type="primary", use_container_width=True, key="btn_act"):
-    if fecha_ini >= fecha_fin:
-        st.error("La fecha inicial debe ser anterior a la fecha final.")
-    elif capitaliza and not (fecha_ini < fecha_demanda < fecha_fin):
-        st.error("La fecha de interposición de demanda debe estar entre la fecha inicial y la fecha final.")
+art3_input = st.checkbox("Incluir 20% art. 3 Ley 26.773", value=True, key="rel_art3")
+
+c_cap1, c_cap2 = st.columns([1, 2])
+with c_cap1:
+    rel_capitaliza = st.checkbox("Capitaliza intereses (Art. 770 inc. b CCyC)", value=False, key="rel_capitaliza")
+with c_cap2:
+    rel_fecha_demanda = st.date_input("Fecha de interposición de demanda", value=date(2022, 1, 1),
+        min_value=date(2002,1,1), max_value=date.today(),
+        format="DD/MM/YYYY", key="rel_fecha_demanda", disabled=not rel_capitaliza)
+
+calcular = st.button("⚡ CALCULAR", type="primary", use_container_width=True, key="btn_rel")
+
+if calcular:
+    if pmi_input >= fcalc_input:
+        st.error("La fecha PMI debe ser anterior a la fecha de cálculo.")
+    elif rel_capitaliza and not (pmi_input < rel_fecha_demanda < fcalc_input):
+        st.error("La fecha de interposición de demanda debe estar entre la PMI y la fecha de cálculo.")
     else:
-        r_ipc   = calcular_ipc_cer_3(monto, fecha_ini, fecha_fin, DS['df_ipc'], DS['df_cer'])
-        r_cer   = calcular_cer_simple(monto, fecha_ini, fecha_fin, DS['datos_cer_xls'])
-        r55     = calcular_art55(monto, fecha_ini, fecha_fin, DS['df_ipc'], DS['df_cer'], DS['datos_tp'])
-        r_ripte = calcular_ripte_6(monto, fecha_ini, fecha_fin, DS['df_ripte'])
+        res = calcular_lrt(pmi_input, fcalc_input, ibm_input, edad_input, inc_input, art3_input,
+                           capitaliza=rel_capitaliza, fecha_demanda=rel_fecha_demanda if rel_capitaliza else None)
+        st.session_state['rel_res'] = res
+        st.session_state['rel_caratula_val'] = caratula_input
 
-        if capitaliza:
-            r_ta = calcular_con_capitalizacion(monto, fecha_ini, fecha_demanda, fecha_fin, DS['df_tasa'], tipo='activa')
-            r_tp = calcular_con_capitalizacion(monto, fecha_ini, fecha_demanda, fecha_fin, DS['datos_tp'], tipo='pasiva')
-        else:
-            r_ta = calcular_tasa_activa(monto, fecha_ini, fecha_fin, DS['df_tasa'])
-            r_tp = calcular_tasa_pasiva(monto, fecha_ini, fecha_fin, DS['datos_tp'])
+# ─────────────────────────────────────────────
+# RESUMEN DE RESULTADOS
+# ─────────────────────────────────────────────
 
-        st.session_state['act_res']    = r_ipc
-        st.session_state['act_cer']    = r_cer
-        st.session_state['act_55']     = r55
-        st.session_state['act_ripte']  = r_ripte
-        st.session_state['act_ta']     = r_ta
-        st.session_state['act_tp']     = r_tp
-        st.session_state['act_capitaliza_usado']    = capitaliza
-        st.session_state['act_fecha_demanda_usada'] = fecha_demanda if capitaliza else None
-        st.session_state['act_monto_calc']  = monto
-        st.session_state['act_f_ini_calc']  = fecha_ini
-        st.session_state['act_f_fin_calc']  = fecha_fin
+# Limpiar session_state viejo sin las claves nuevas
+if 'rel_res' in st.session_state and 'capital_formula' not in st.session_state.get('rel_res', {}):
+    del st.session_state['rel_res']
+if 'rel_res' in st.session_state and 'capitaliza' not in st.session_state.get('rel_res', {}):
+    del st.session_state['rel_res']
 
-if 'act_res' in st.session_state and 'act_ripte' not in st.session_state:
-    del st.session_state['act_res']
+if 'rel_res' in st.session_state:
+    r = st.session_state['rel_res']
+    ipc  = r['ipc']
+    tasa = r['tasa']
+    art55 = ipc.get('art55_piso', 0.0)
 
-if 'act_res' not in st.session_state:
-    st.info("👈 Completá los datos y presioná CALCULAR")
-    st.stop()
+    cer_total = r.get('cer', {}).get('total', 0.0)
+    tp_total  = r.get('tp',  {}).get('total', 0.0)
 
-r       = st.session_state['act_res']
-r55     = st.session_state['act_55']
-r_ripte = st.session_state['act_ripte']
-r_ta    = st.session_state['act_ta']
-r_tp    = st.session_state['act_tp']
-r_cer   = st.session_state.get('act_cer', {})
-cap_usado       = st.session_state.get('act_capitaliza_usado', False)
-f_demanda_usada = st.session_state.get('act_fecha_demanda_usada')
-monto_c   = st.session_state['act_monto_calc']
-f_ini_c   = st.session_state['act_f_ini_calc']
-f_fin_c   = st.session_state['act_f_fin_calc']
-f_ini_str = f_ini_c.strftime('%d/%m/%Y')
-f_fin_str = f_fin_c.strftime('%d/%m/%Y')
-
-st.markdown("---")
-
-# ═══════════════════════════════════════════════════════════════
-# BLOQUE 1 — IPC + 3%
-# ═══════════════════════════════════════════════════════════════
-st.markdown("**IPC + 3% simple (Art. 276 LCT conf. Art. 54 LML)**")
-st.markdown(
-    f"<div style='background:#b8952a;padding:8px 16px;margin-bottom:8px;"
-    f"display:flex;justify-content:space-between;align-items:center;border-radius:4px'>"
-    f"<span style='color:white;font-weight:600'>Total actualizado</span>"
-    f"<span style='color:white;font-family:monospace;font-size:16px;font-weight:800'>"
-    f"{formato_moneda(r['total'])}</span></div>",
-    unsafe_allow_html=True
-)
-
-if r['metodo'] == 'CER+IPC':
-    linea_act_ipc = (
-        f"2. Capital Actualizado mediante CER/IPC "
-        f"(CER {f_ini_c.strftime('%m/%Y')}: {r['cer_origen']:.6f} / "
-        f"CER Nov-2016: {r['cer_nov2016']:.6f} — Coef. CER: {r['coef_cer']:.4f} — "
-        f"IPC base 100 / {r['ipc_ultimo_fecha'].strftime('%m/%Y')}: {r['ipc_ultimo']:.2f} — "
-        f"Coef. total: {r['coef']:.4f} — {r['pct_variacion']:.2f}%) "
-        f"{formato_moneda(r['capital_indexado'])}"
-    )
-else:
-    linea_act_ipc = (
-        f"2. Capital Actualizado mediante IPC "
-        f"({r['ipc_ultimo_fecha'].strftime('%m/%Y')}: {r['ipc_ultimo']:.2f} / "
-        f"{f_ini_c.strftime('%m/%Y')}: {r['ipc_origen']:.2f} — "
-        f"Coef. {r['coef']:.4f} — {r['pct_variacion']:.2f}%) "
-        f"{formato_moneda(r['capital_indexado'])}"
-    )
-
-with st.expander("Detalle"):
-    if r['metodo'] == 'CER+IPC':
-        st.write(f"**Método:** CER + IPC (empalme)")
-        st.write(f"**CER origen ({f_ini_c.strftime('%m/%Y')}):** {r['cer_origen']:.6f}")
-        st.write(f"**CER nov-2016:** {r['cer_nov2016']:.6f}")
-        st.write(f"**Coef. CER:** {r['coef_cer']:.6f}")
-        st.write(f"**Coef. IPC:** {r['coef_ipc']:.6f}")
-    else:
-        st.write(f"**IPC origen ({mes_anio(f_ini_c)}):** {r['ipc_origen']:.2f}")
-        st.write(f"**IPC último ({mes_anio(r['ipc_ultimo_fecha'])}):** {r['ipc_ultimo']:.2f}")
-    st.write(f"**Coef. total:** {r['coef']:.6f} ({r['pct_variacion']:.2f}%)")
-    st.write(f"**Capital indexado:** {formato_moneda(r['capital_indexado'])}")
-    st.write(f"**Interés 3% simple ({r['dias']} días):** {formato_moneda(r['interes_3'])}")
-
-with st.expander("Liquidación"):
-    lineas_ipc = [
-        f"1. Capital Histórico {formato_moneda(monto_c)}",
-        linea_act_ipc,
-        f"3. Interés puro del 3% anual desde {f_ini_str} hasta {f_fin_str} {formato_moneda(r['interes_3'])}",
-    ]
-    txt_ipc = texto_liq_generico(monto_c, f_ini_c, f_fin_c, lineas_ipc, r['total'])
-    st.text_area("", txt_ipc, height=max(300, txt_ipc.count('\n') * 28 + 100), key="ta_liq_ipc")
-
-st.markdown("---")
-
-# ═══════════════════════════════════════════════════════════════
-# BLOQUE 2 — ART. 55 inc. c) — 67% de IPC+3% (piso)
-# ═══════════════════════════════════════════════════════════════
-usar_bcra_55 = st.checkbox(
-    "Método BCRA (CER + 3% compuesto)",
-    value=False, key="act_bcra_55",
-    help="La calculadora oficial del BCRA usa el CER diario con interés compuesto."
-)
-if usar_bcra_55:
-    r55_show = calcular_art55(monto_c, f_ini_c, f_fin_c, DS['df_ipc'], DS['df_cer'], DS['datos_tp'],
-                              usar_bcra=True, datos_cer_xls=DS['datos_cer_xls'])
-else:
-    r55_show = r55
-
-st.markdown("**Art. 55 inc. c) LML — 67% de IPC + 3% (piso)**")
-st.markdown(
-    f"<div style='background:#9d6b18;padding:8px 16px;margin-bottom:8px;"
-    f"display:flex;justify-content:space-between;align-items:center;border-radius:4px'>"
-    f"<span style='color:white;font-weight:600'>Total Art. 55 inc. c)</span>"
-    f"<span style='color:white;font-family:monospace;font-size:16px;font-weight:800'>"
-    f"{formato_moneda(r55_show['piso_67'])}</span></div>",
-    unsafe_allow_html=True
-)
-st.caption("Se calcula también el techo (inc. b) e la tasa pasiva (inc. a) — el juez puede apartarse de la banda por inconstitucionalidad.")
-
-with st.expander("Detalle"):
-    st.write(f"**IPC + 3% — techo (inc. b):** {formato_moneda(r55_show['ipc_3'])}")
-    st.write(f"**67% de IPC + 3% — piso (inc. c):** {formato_moneda(r55_show['piso_67'])}")
-    st.write(f"**Tasa Pasiva BCRA (inc. a):** {formato_moneda(r55_show['tasa_pasiva'])}")
-    st.write(f"**Valor que aplica según la banda:** {r55_show['label_aplica']}")
-
-with st.expander("Liquidación"):
-    lineas_55 = [
-        f"1. Capital Histórico {formato_moneda(monto_c)}",
-        linea_act_ipc,
-        f"3. Interés puro del 3% anual desde {f_ini_str} hasta {f_fin_str} {formato_moneda(r['interes_3'])}",
-        f"SUBTOTAL IPC + 3% {formato_moneda(r['total'])}",
-        f"4. Art. 55 inc. c) LML — 67% de IPC + 3% {formato_moneda(r55_show['piso_67'])}",
-    ]
-    txt_55 = texto_liq_generico(monto_c, f_ini_c, f_fin_c, lineas_55, r55_show['piso_67'])
-    st.text_area("", txt_55, height=max(300, txt_55.count('\n') * 28 + 100), key="ta_liq_55")
-
-st.markdown("---")
-
-# ═══════════════════════════════════════════════════════════════
-# BLOQUE 3 — TASA PASIVA BCRA (con capitalización opcional)
-# ═══════════════════════════════════════════════════════════════
-if cap_usado:
-    st.markdown("**Tasa Pasiva BCRA — con capitalización de intereses (Art. 770 inc. b CCyC)**")
-else:
-    st.markdown("**Tasa Pasiva BCRA**")
-st.markdown(
-    f"<div style='background:#9a9eaa;padding:8px 16px;margin-bottom:8px;"
-    f"display:flex;justify-content:space-between;align-items:center;border-radius:4px'>"
-    f"<span style='color:white;font-weight:600'>Total Tasa Pasiva BCRA</span>"
-    f"<span style='color:white;font-family:monospace;font-size:16px;font-weight:800'>"
-    f"{formato_moneda(r_tp['total'])}</span></div>",
-    unsafe_allow_html=True
-)
-
-with st.expander("Detalle"):
-    if cap_usado:
-        st.write(f"**Capital histórico:** {formato_moneda(r_tp['capital_historico'])}")
-        st.write(f"**Tramo 1** — desde {f_ini_str} hasta interposición de demanda "
-                 f"({f_demanda_usada.strftime('%d/%m/%Y')}): tasa acumulada {r_tp['tramo1']['tasa_pct']:.4f}%")
-        st.write(f"**Capital capitalizado al {f_demanda_usada.strftime('%d/%m/%Y')}:** "
-                 f"{formato_moneda(r_tp['capital_capitalizado'])} "
-                 f"(interés tramo 1: {formato_moneda(r_tp['interes_tramo1'])})")
-        st.write(f"**Tramo 2** — desde {f_demanda_usada.strftime('%d/%m/%Y')} hasta "
-                 f"{f_fin_str}: tasa acumulada {r_tp['tramo2']['tasa_pct']:.4f}%")
-        st.write(f"**Total final:** {formato_moneda(r_tp['total'])}")
-    else:
-        st.write(f"**T₀ ({r_tp['T0_fecha'].strftime('%d/%m/%Y')}):** {r_tp['T0']:.6f}")
-        st.write(f"**Tₘ ({r_tp['Tm_fecha'].strftime('%d/%m/%Y')}):** {r_tp['Tm']:.6f}")
-        st.write(f"**Tasa período:** {r_tp['tasa_pct']:.4f}%")
-
-with st.expander("Liquidación"):
-    if cap_usado:
-        f_dem = f_demanda_usada.strftime('%d/%m/%Y')
-        lineas_tp = [
-            f"1. Capital Histórico {formato_moneda(monto_c)}",
-            f"2. Intereses Tasa Pasiva BCRA desde {f_ini_str} hasta interposición de demanda ({f_dem}) "
-            f"(tasa período: {r_tp['tramo1']['tasa_pct']:.4f}%) {formato_moneda(r_tp['interes_tramo1'])}",
-            f"3. Capital Capitalizado al {f_dem} (Art. 770 inc. b CCyC) {formato_moneda(r_tp['capital_capitalizado'])}",
-            f"4. Intereses Tasa Pasiva BCRA desde {f_dem} hasta {f_fin_str} "
-            f"(tasa período: {r_tp['tramo2']['tasa_pct']:.4f}%) {formato_moneda(r_tp['total'] - r_tp['capital_capitalizado'])}",
-        ]
-    else:
-        lineas_tp = [
-            f"1. Capital Histórico {formato_moneda(monto_c)}",
-            f"2. Intereses Tasa Pasiva BCRA desde {f_ini_str} hasta {f_fin_str} "
-            f"(T₀: {r_tp['T0']:.6f} / Tₘ: {r_tp['Tm']:.6f} — tasa período: {r_tp['tasa_pct']:.4f}%) "
-            f"{formato_moneda(r_tp['total'] - monto_c)}",
-        ]
-    txt_tp = texto_liq_generico(monto_c, f_ini_c, f_fin_c, lineas_tp, r_tp['total'])
-    st.text_area("", txt_tp, height=max(300, txt_tp.count('\n') * 28 + 100), key="ta_liq_tp")
-
-st.markdown("---")
-
-# ═══════════════════════════════════════════════════════════════
-# BLOQUE 4 — TASA ACTIVA BNA (con capitalización opcional)
-# ═══════════════════════════════════════════════════════════════
-if cap_usado:
-    st.markdown("**Tasa Activa BNA — con capitalización de intereses (Art. 770 inc. b CCyC)**")
-else:
-    st.markdown("**Tasa Activa BNA (Art. 12 inc. b LRT conf. Art. 11 Ley 27.348)**")
-st.markdown(
-    f"<div style='background:#7b9e87;padding:8px 16px;margin-bottom:8px;"
-    f"display:flex;justify-content:space-between;align-items:center;border-radius:4px'>"
-    f"<span style='color:white;font-weight:600'>Total Tasa Activa BNA</span>"
-    f"<span style='color:white;font-family:monospace;font-size:16px;font-weight:800'>"
-    f"{formato_moneda(r_ta['total'])}</span></div>",
-    unsafe_allow_html=True
-)
-
-with st.expander("Detalle"):
-    if cap_usado:
-        st.write(f"**Capital histórico:** {formato_moneda(r_ta['capital_historico'])}")
-        st.write(f"**Tramo 1** — desde {f_ini_str} hasta interposición de demanda "
-                 f"({f_demanda_usada.strftime('%d/%m/%Y')}): tasa acumulada {r_ta['tramo1']['tasa_pct']:.2f}%")
-        st.write(f"**Capital capitalizado al {f_demanda_usada.strftime('%d/%m/%Y')}:** "
-                 f"{formato_moneda(r_ta['capital_capitalizado'])} "
-                 f"(interés tramo 1: {formato_moneda(r_ta['interes_tramo1'])})")
-        st.write(f"**Tramo 2** — desde {f_demanda_usada.strftime('%d/%m/%Y')} hasta "
-                 f"{f_fin_str}: tasa acumulada {r_ta['tramo2']['tasa_pct']:.2f}%")
-        st.write(f"**Total final:** {formato_moneda(r_ta['total'])}")
-    else:
-        st.write(f"**Tasa acumulada:** {r_ta['tasa_pct']:.2f}%")
-
-with st.expander("Liquidación"):
-    if cap_usado:
-        f_dem = f_demanda_usada.strftime('%d/%m/%Y')
-        lineas_ta = [
-            f"1. Capital Histórico {formato_moneda(monto_c)}",
-            f"2. Intereses Tasa Activa BNA desde {f_ini_str} hasta interposición de demanda ({f_dem}) "
-            f"(tasa acumulada: {r_ta['tramo1']['tasa_pct']:.2f}%) {formato_moneda(r_ta['interes_tramo1'])}",
-            f"3. Capital Capitalizado al {f_dem} (Art. 770 inc. b CCyC) {formato_moneda(r_ta['capital_capitalizado'])}",
-            f"4. Intereses Tasa Activa BNA desde {f_dem} hasta {f_fin_str} "
-            f"(tasa acumulada: {r_ta['tramo2']['tasa_pct']:.2f}%) {formato_moneda(r_ta['total'] - r_ta['capital_capitalizado'])}",
-        ]
-    else:
-        lineas_ta = [
-            f"1. Capital Histórico {formato_moneda(monto_c)}",
-            f"2. Intereses Tasa Activa BNA desde {f_ini_str} hasta {f_fin_str} "
-            f"(tasa acumulada: {r_ta['tasa_pct']:.2f}%) {formato_moneda(r_ta['total'] - monto_c)}",
-        ]
-    txt_ta = texto_liq_generico(monto_c, f_ini_c, f_fin_c, lineas_ta, r_ta['total'])
-    st.text_area("", txt_ta, height=max(300, txt_ta.count('\n') * 28 + 100), key="ta_liq_ta")
-
-st.markdown("---")
-
-# ═══════════════════════════════════════════════════════════════
-# BLOQUE 5 — RIPTE + 6% (Barrios)
-# ═══════════════════════════════════════════════════════════════
-st.markdown("**RIPTE + 6% (Barrios)**")
-st.markdown(
-    f"<div style='background:#5b7a9e;padding:8px 16px;margin-bottom:8px;"
-    f"display:flex;justify-content:space-between;align-items:center;border-radius:4px'>"
-    f"<span style='color:white;font-weight:600'>Total RIPTE + 6%</span>"
-    f"<span style='color:white;font-family:monospace;font-size:16px;font-weight:800'>"
-    f"{formato_moneda(r_ripte['total'])}</span></div>",
-    unsafe_allow_html=True
-)
-
-with st.expander("Detalle"):
-    st.write(f"**RIPTE origen ({mes_anio(f_ini_c)}):** {r_ripte['ripte_origen']:.2f}")
-    st.write(f"**RIPTE último ({mes_anio(r_ripte['ripte_calculo_fecha'])}):** {r_ripte['ripte_calculo']:.2f}")
-    st.write(f"**Coeficiente:** {r_ripte['coef']:.6f} ({r_ripte['pct_variacion']:.2f}%)")
-    st.write(f"**Capital indexado:** {formato_moneda(r_ripte['capital_indexado'])}")
-    st.write(f"**Interés 6% simple ({r_ripte['dias']} días):** {formato_moneda(r_ripte['interes_6'])}")
-
-with st.expander("Liquidación"):
-    linea_act_ripte = (
-        f"2. Capital Actualizado mediante RIPTE "
-        f"({r_ripte['ripte_calculo_fecha'].strftime('%m/%Y')}: {r_ripte['ripte_calculo']:.2f} / "
-        f"{f_ini_c.strftime('%m/%Y')}: {r_ripte['ripte_origen']:.2f} — "
-        f"Coef. {r_ripte['coef']:.4f} — {r_ripte['pct_variacion']:.2f}%) "
-        f"{formato_moneda(r_ripte['capital_indexado'])}"
-    )
-    lineas_ripte = [
-        f"1. Capital Histórico {formato_moneda(monto_c)}",
-        linea_act_ripte,
-        f"3. Interés puro del 6% anual desde {f_ini_str} hasta {f_fin_str} {formato_moneda(r_ripte['interes_6'])}",
-    ]
-    txt_ripte = texto_liq_generico(monto_c, f_ini_c, f_fin_c, lineas_ripte, r_ripte['total'])
-    st.text_area("", txt_ripte, height=max(300, txt_ripte.count('\n') * 28 + 100), key="ta_liq_ripte")
-
-st.markdown("---")
-
-# ═══════════════════════════════════════════════════════════════
-# BLOQUE 6 — CER + 3% (referencia)
-# ═══════════════════════════════════════════════════════════════
-if r_cer:
-    st.markdown("**CER diario + 3% simple** *(referencia)*")
+    # ── Detalle fórmula ──
+    label_piso = " ⚠️ piso" if r['piso_aplicado'] else ""
+    st.markdown(f"**Capital fórmula:** {formato_moneda(r['capital_formula'])}")
+    st.caption(r['piso_txt'])
+    if r['art3']:
+        st.markdown(f"**20% art. 3 Ley 26.773:** {formato_moneda(r['adicional_20'])}")
     st.markdown(
-        f"<div style='background:#6c3483;padding:7px 16px;margin-bottom:8px;"
-        f"display:flex;justify-content:space-between;align-items:center;border-radius:4px'>"
-        f"<span style='color:white;font-size:12px;font-weight:600'>Total CER + 3%</span>"
-        f"<span style='color:white;font-family:monospace;font-size:15px;font-weight:800'>"
-        f"{formato_moneda(r_cer['total'])}</span></div>",
+        f"<div style='margin:8px 0 12px 0'>"
+        f"<span style='font-size:1.3rem;font-weight:700;color:#c0392b'>"
+        f"CAPITAL BASE: {formato_moneda(r['capital_total'])}{label_piso}</span></div>",
         unsafe_allow_html=True
     )
 
-    with st.expander("Detalle"):
-        st.write(f"**CER origen ({f_ini_str}):** {r_cer['cer_origen']:.6f}")
-        st.write(f"**CER cálculo ({r_cer['cer_calculo_fecha'].strftime('%d/%m/%Y')}):** {r_cer['cer_calculo']:.6f}")
-        st.write(f"**Coeficiente:** {r_cer['coef']:.6f} ({r_cer['pct_variacion']:.2f}%)")
-        st.write(f"**Capital indexado:** {formato_moneda(r_cer['capital_indexado'])}")
-        st.write(f"**Interés 3% simple ({r_cer['dias']} días):** {formato_moneda(r_cer['interes_3'])}")
+    # Ordenados de mayor a menor (sin CER)
+    principales = sorted([
+        ('IPC + 3% (Art. 276 LCT conf. Art. 54 LML)',          ipc['total'],   '#4a9e9e'),
+        ('Tasa Activa BNA (Art. 12 inc. b LRT conf. Art. 11 Ley 27.348)',   tasa['total'],  '#c8956a'),
+        ('Art. 55 inc. c LML — 67% de IPC + 3%', art55,          '#c8956a'),
+        ('Tasa Pasiva BCRA (Art. 55 inc. a LML conf. Res. 45/26 BCRA)',  tp_total,       '#9c82ae'),
+    ], key=lambda x: -x[1])
 
-    with st.expander("Liquidación"):
-        linea_act_cer = (
-            f"2. Capital Actualizado mediante CER "
-            f"({r_cer['cer_calculo_fecha'].strftime('%d/%m/%Y')}: {r_cer['cer_calculo']:.6f} / "
-            f"{r_cer['cer_origen_fecha'].strftime('%d/%m/%Y')}: {r_cer['cer_origen']:.6f} — "
-            f"Coef. {r_cer['coef']:.6f} — {r_cer['pct_variacion']:.2f}%) {formato_moneda(r_cer['capital_indexado'])}"
+    _colores_pos = ['#4a9e9e', '#6a9e7a', '#c8956a', '#9c82ae']
+    st.markdown("---")
+    for _i, (_lbl, _val, _c) in enumerate(principales):
+        _col = _colores_pos[_i] if _i < len(_colores_pos) else '#9c82ae'
+        st.markdown(
+            f"<div style='background:{_col};padding:8px 16px;margin-bottom:4px;"
+            f"display:flex;justify-content:space-between;align-items:center;border-radius:6px'>"
+            f"<span style='font-weight:600;color:white;font-size:13px'>{_lbl}</span>"
+            f"<span style='font-family:monospace;font-size:16px;font-weight:800;color:white'>{formato_moneda(_val)}</span>"
+            f"</div>",
+            unsafe_allow_html=True
         )
-        lineas_cer = [
-            f"1. Capital Histórico {formato_moneda(monto_c)}",
-            linea_act_cer,
-            f"3. Interés puro del 3% anual desde {f_ini_str} hasta {f_fin_str} {formato_moneda(r_cer['interes_3'])}",
-        ]
-        txt_cer = texto_liq_generico(monto_c, f_ini_c, f_fin_c, lineas_cer, r_cer['total'])
-        st.text_area("", txt_cer, height=max(300, txt_cer.count('\n') * 28 + 100), key="ta_liq_cer")
+    if cer_total:
+        st.markdown(
+            f"<div style='background:#7b5ea8;padding:8px 16px;margin-bottom:4px;"
+            f"display:flex;justify-content:space-between;align-items:center;border-radius:6px'>"
+            f"<span style='font-weight:600;color:white;font-size:13px'>CER + 3% (valor de referencia inflación)</span>"
+            f"<span style='font-family:monospace;font-size:16px;font-weight:800;color:white'>{formato_moneda(cer_total)}</span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+    st.markdown("<div style='margin-bottom:16px'></div>", unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════════════
-# PDF
-# ═══════════════════════════════════════════════════════════════
-st.markdown("---")
-if st.button("🖨️ Generar PDF", key="act_pdf_btn"):
-    st.session_state['act_pdf'] = True
+    if r.get('capitaliza'):
+        f_dem = r['fecha_demanda']
+        with st.expander("Detalle de la capitalización de intereses (Art. 770 inc. b CCyC)"):
+            st.markdown(f"**Tasa Activa BNA**")
+            st.write(f"Tramo 1 — desde {r['pmi'].strftime('%d/%m/%Y')} hasta interposición de demanda "
+                     f"({f_dem.strftime('%d/%m/%Y')}): tasa acumulada {tasa['tramo1']['tasa_pct']:.2f}%")
+            st.write(f"Capital capitalizado al {f_dem.strftime('%d/%m/%Y')}: "
+                     f"{formato_moneda(tasa['capital_capitalizado'])} "
+                     f"(interés tramo 1: {formato_moneda(tasa['interes_tramo1'])})")
+            st.write(f"Tramo 2 — desde {f_dem.strftime('%d/%m/%Y')} hasta {r['fecha_calculo'].strftime('%d/%m/%Y')}: "
+                     f"tasa acumulada {tasa['tramo2']['tasa_pct']:.2f}%")
+            st.write(f"Total final: {formato_moneda(tasa['total'])}")
+            st.markdown(f"**Tasa Pasiva BCRA**")
+            tp_obj = r.get('tp', {})
+            if tp_obj:
+                st.write(f"Tramo 1 — desde {r['pmi'].strftime('%d/%m/%Y')} hasta interposición de demanda "
+                         f"({f_dem.strftime('%d/%m/%Y')}): tasa período {tp_obj['tramo1']['tasa_pct']:.2f}%")
+                st.write(f"Capital capitalizado al {f_dem.strftime('%d/%m/%Y')}: "
+                         f"{formato_moneda(tp_obj['capital_capitalizado'])} "
+                         f"(interés tramo 1: {formato_moneda(tp_obj['interes_tramo1'])})")
+                st.write(f"Tramo 2 — desde {f_dem.strftime('%d/%m/%Y')} hasta {r['fecha_calculo'].strftime('%d/%m/%Y')}: "
+                         f"tasa período {tp_obj['tramo2']['tasa_pct']:.2f}%")
+                st.write(f"Total final: {formato_moneda(tp_obj['total'])}")
 
-if st.session_state.get('act_pdf'):
-    if r['metodo'] == 'CER+IPC':
-        det_html_ipc = f"""
-        <tr><td>CER origen ({f_ini_c.strftime('%m/%Y')})</td><td class="num">{r['cer_origen']:.6f}</td></tr>
-        <tr><td>CER nov-2016</td><td class="num">{r['cer_nov2016']:.6f}</td></tr>
-        <tr><td>Coef. CER</td><td class="num">{r['coef_cer']:.6f}</td></tr>
-        <tr><td>IPC base 100 → {mes_anio(r['ipc_ultimo_fecha'])}: {r['ipc_ultimo']:.2f}</td><td class="num">Coef. IPC: {r['coef_ipc']:.6f}</td></tr>
-        <tr><td>Capital indexado</td><td class="num">{formato_moneda(r['capital_indexado'])}</td></tr>
-        <tr><td>Interés 3% simple ({r['dias']} días)</td><td class="num">{formato_moneda(r['interes_3'])}</td></tr>
-        """
-    else:
-        det_html_ipc = f"""
-        <tr><td>IPC origen ({mes_anio(f_ini_c)})</td><td class="num">{r['ipc_origen']:.2f}</td></tr>
-        <tr><td>IPC último ({mes_anio(r['ipc_ultimo_fecha'])})</td><td class="num">{r['ipc_ultimo']:.2f}</td></tr>
-        <tr><td>Coeficiente</td><td class="num">{r['coef']:.6f} ({r['pct_variacion']:.2f}%)</td></tr>
-        <tr><td>Capital indexado</td><td class="num">{formato_moneda(r['capital_indexado'])}</td></tr>
-        <tr><td>Interés 3% simple ({r['dias']} días)</td><td class="num">{formato_moneda(r['interes_3'])}</td></tr>
-        """
+    # ─────────────────────────────────────────────
+    # PESTAÑAS
+    # ─────────────────────────────────────────────
 
-    if cap_usado:
-        det_html_tp = f"""
-        <tr><td>Capital histórico</td><td class="num">{formato_moneda(r_tp['capital_historico'])}</td></tr>
-        <tr><td>Tramo 1 (hasta demanda {f_demanda_usada.strftime('%d/%m/%Y')})</td><td class="num">tasa {r_tp['tramo1']['tasa_pct']:.4f}%</td></tr>
-        <tr><td>Capital capitalizado</td><td class="num">{formato_moneda(r_tp['capital_capitalizado'])}</td></tr>
-        <tr><td>Tramo 2 (desde demanda hasta cálculo)</td><td class="num">tasa {r_tp['tramo2']['tasa_pct']:.4f}%</td></tr>
-        """
-        det_html_ta = f"""
-        <tr><td>Capital histórico</td><td class="num">{formato_moneda(r_ta['capital_historico'])}</td></tr>
-        <tr><td>Tramo 1 (hasta demanda {f_demanda_usada.strftime('%d/%m/%Y')})</td><td class="num">tasa {r_ta['tramo1']['tasa_pct']:.2f}%</td></tr>
-        <tr><td>Capital capitalizado</td><td class="num">{formato_moneda(r_ta['capital_capitalizado'])}</td></tr>
-        <tr><td>Tramo 2 (desde demanda hasta cálculo)</td><td class="num">tasa {r_ta['tramo2']['tasa_pct']:.2f}%</td></tr>
-        """
-    else:
-        det_html_tp = f"""
-        <tr><td>T₀ ({r_tp['T0_fecha'].strftime('%d/%m/%Y')})</td><td class="num">{r_tp['T0']:.6f}</td></tr>
-        <tr><td>Tₘ ({r_tp['Tm_fecha'].strftime('%d/%m/%Y')})</td><td class="num">{r_tp['Tm']:.6f}</td></tr>
-        <tr><td>Tasa período</td><td class="num">{r_tp['tasa_pct']:.4f}%</td></tr>
-        """
-        det_html_ta = f"""
-        <tr><td>Tasa acumulada</td><td class="num">{r_ta['tasa_pct']:.2f}%</td></tr>
-        """
+    tab_sent, tab_liq, tab_hon = st.tabs(["📄 Sentencia", "📋 Liquidación", "💵 Honorarios"])
 
-    det_html_ripte = f"""
-    <tr><td>RIPTE origen ({mes_anio(f_ini_c)})</td><td class="num">{r_ripte['ripte_origen']:.2f}</td></tr>
-    <tr><td>RIPTE último ({mes_anio(r_ripte['ripte_calculo_fecha'])})</td><td class="num">{r_ripte['ripte_calculo']:.2f}</td></tr>
-    <tr><td>Coeficiente</td><td class="num">{r_ripte['coef']:.6f} ({r_ripte['pct_variacion']:.2f}%)</td></tr>
-    <tr><td>Capital indexado</td><td class="num">{formato_moneda(r_ripte['capital_indexado'])}</td></tr>
-    <tr><td>Interés 6% simple ({r_ripte['dias']} días)</td><td class="num">{formato_moneda(r_ripte['interes_6'])}</td></tr>
-    """
+    with tab_sent:
+        txt_sent = texto_sentencia(r)
+        st.text_area("", txt_sent, height=max(400, txt_sent.count("\n") * 28 + 100), key="ta_sent")
 
-    html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
-<style>
-@page {{size:A4;margin:1.5cm}}
-@media print {{.no-print {{display:none}} body {{background:white}}}}
-* {{box-sizing:border-box;margin:0;padding:0}}
-body {{font-family:Arial,sans-serif;font-size:10px;background:#eee;padding:12px}}
-.container {{background:white;padding:18px;max-width:760px;margin:0 auto}}
-h1 {{font-size:15px;text-align:center;border-bottom:2px solid #000;padding-bottom:6px;margin-bottom:12px}}
-h2 {{font-size:11px;font-weight:700;margin:10px 0 4px 0;text-transform:uppercase;color:#333}}
-table {{width:100%;border-collapse:collapse;margin-bottom:10px}}
-td,th {{padding:4px 7px;border:1px solid #ccc;font-size:9.5px}}
-th {{background:#333;color:#fff;font-weight:600;text-align:left}}
-.num {{text-align:right}}
-.footer {{text-align:center;font-size:8px;color:#888;margin-top:14px;border-top:1px solid #ddd;padding-top:6px}}
-.btn {{background:#333;color:white;border:none;padding:7px 16px;cursor:pointer;font-size:12px;font-weight:600;margin-bottom:10px}}
-</style></head><body>
-<button class="btn no-print" onclick="window.print()">🖨️ IMPRIMIR / GUARDAR PDF</button>
-<div class="container">
-<h1>ACTUALIZACIÓN E INTERESES</h1>
+    with tab_liq:
+        caratula = st.session_state.get('rel_caratula_val', '')
+        tp_tot = r.get('tp', {}).get('total', 0.0)
+        variantes_liq = sorted([
+            ('ipc',   ipc['total']),
+            ('tasa',  tasa['total']),
+            ('art55', art55),
+            ('tp',    tp_tot),
+        ], key=lambda x: -x[1])
 
-<table>
-<tr><th colspan="2">DATOS</th></tr>
-<tr><td>Monto histórico</td><td class="num"><strong>{formato_moneda(monto_c)}</strong></td></tr>
-<tr><td>Período</td><td>{f_ini_str} al {f_fin_str}</td></tr>
-{f"<tr><td>Capitaliza desde demanda</td><td>{f_demanda_usada.strftime('%d/%m/%Y')} (Art. 770 inc. b CCyC)</td></tr>" if cap_usado else ""}
-</table>
+        labels = {'ipc': 'IPC + 3% (Art. 276 LCT conf. Art. 54 LML)', 'tasa': 'Tasa Activa BNA (Art. 12 inc. b LRT conf. Art. 11 Ley 27.348)', 'art55': 'Art. 55 Ley 27802 (67%)', 'tp': 'Tasa Pasiva BCRA (Art. 55 inc. a LML conf. Res. 45/26 BCRA)'}
+        subtotales = {'ipc': ipc['total'], 'tasa': tasa['total'], 'art55': art55, 'tp': tp_tot}
+        for idx, (variante, _) in enumerate(variantes_liq):
+            texto_var, total_final = texto_liquidacion(r, caratula, variante)
+            subtotal = subtotales[variante]
+            titulo = f"**{labels[variante]} — {formato_moneda(subtotal)}**" if idx == 0 else f"{labels[variante]} — {formato_moneda(subtotal)}"
+            st.markdown(titulo)
+            st.text_area("", texto_var, height=max(400, texto_var.count("\n") * 28 + 100), key=f"ta_liq_{variante}")
 
-<h2>1. IPC + 3% SIMPLE (Art. 276 LCT)</h2>
-<table>
-<tr><th colspan="2">Detalle</th></tr>
-{det_html_ipc}
-<tr><th>TOTAL</th><th class="num">{formato_moneda(r['total'])}</th></tr>
-</table>
+    with tab_hon:
+        st.subheader("Regulación de Honorarios — Ley 24.432")
+        # Monto viene del cálculo principal — el más favorable
+        monto_juicio_hon = max(ipc['total'], tasa['total'])
 
-<h2>2. Art. 55 inc. c) LML — 67% de IPC + 3% (piso)</h2>
-<table>
-<tr><td>IPC + 3% — techo (inc. b)</td><td class="num">{formato_moneda(r55_show['ipc_3'])}</td></tr>
-<tr><td>67% de IPC + 3% — piso (inc. c)</td><td class="num">{formato_moneda(r55_show['piso_67'])}</td></tr>
-<tr><td>Tasa Pasiva BCRA (inc. a)</td><td class="num">{formato_moneda(r55_show['tasa_pasiva'])}</td></tr>
-<tr><th>TOTAL (inc. c — piso)</th><th class="num">{formato_moneda(r55_show['piso_67'])}</th></tr>
-</table>
-<p style="font-size:8.5px;color:#555;margin-bottom:8px">
-Se exponen los tres valores. El juez puede apartarse de la banda legal por razones de inconstitucionalidad.
-</p>
+        c1, c2 = st.columns(2)
+        with c1:
+            fecha_sent_hon = st.date_input("Fecha de sentencia",
+                value=date.today(), format="DD/MM/YYYY", key="hon_fecha")
+        with c2:
+            n_aux = st.number_input("Cantidad de auxiliares",
+                min_value=0, max_value=5, value=1, step=1, key="hon_naux")
 
-<h2>3. Tasa Pasiva BCRA{" — con capitalización Art. 770 inc. b CCyC" if cap_usado else " (Res. 45/26)"}</h2>
-<table>
-{det_html_tp}
-<tr><th>TOTAL</th><th class="num">{formato_moneda(r_tp['total'])}</th></tr>
-</table>
+        st.caption(f"Monto del juicio (más favorable): {formato_moneda(monto_juicio_hon)}")
 
-<h2>4. Tasa Activa BNA{" — con capitalización Art. 770 inc. b CCyC" if cap_usado else " (Art. 12 inc. b LRT)"}</h2>
-<table>
-{det_html_ta}
-<tr><th>TOTAL</th><th class="num">{formato_moneda(r_ta['total'])}</th></tr>
-</table>
+        if st.button("⚡ CALCULAR HONORARIOS", type="primary", key="btn_hon"):
+            valor_jus, acuerdo_jus = get_valor_jus(DS['df_jus'], fecha_sent_hon)
+            h = calcular_honorarios(monto_juicio_hon, int(n_aux), valor_jus)
+            st.session_state['hon_res']    = h
+            st.session_state['hon_acuerdo'] = acuerdo_jus
+            st.session_state['hon_monto_j'] = monto_juicio_hon
 
-<h2>5. RIPTE + 6% (Barrios)</h2>
-<table>
-{det_html_ripte}
-<tr><th>TOTAL</th><th class="num">{formato_moneda(r_ripte['total'])}</th></tr>
-</table>
+        if 'hon_res' in st.session_state and 'hon_acuerdo' in st.session_state and 'hon_monto_j' in st.session_state:
+            h       = st.session_state['hon_res']
+            acuerdo = st.session_state['hon_acuerdo']
+            monto_j = st.session_state['hon_monto_j']
 
-{f'''<h2>6. CER + 3% simple (referencia)</h2>
-<table>
-<tr><td>CER origen ({f_ini_str})</td><td class="num">{r_cer["cer_origen"]:.6f}</td></tr>
-<tr><td>CER cálculo ({r_cer["cer_calculo_fecha"].strftime("%d/%m/%Y")})</td><td class="num">{r_cer["cer_calculo"]:.6f}</td></tr>
-<tr><td>Coeficiente</td><td class="num">{r_cer["coef"]:.6f} ({r_cer["pct_variacion"]:.2f}%)</td></tr>
-<tr><td>Capital indexado</td><td class="num">{formato_moneda(r_cer["capital_indexado"])}</td></tr>
-<tr><td>Interés 3% simple ({r_cer["dias"]} días)</td><td class="num">{formato_moneda(r_cer["interes_3"])}</td></tr>
-<tr><th>TOTAL</th><th class="num">{formato_moneda(r_cer["total"])}</th></tr>
-</table>''' if r_cer else ''}
+            st.caption(f"Monto del juicio: {formato_moneda(monto_j)} — JUS vigente: {formato_moneda(h['valor_jus'])} ({acuerdo})")
+            st.markdown("---")
 
-<div class="footer">Tribunal de Trabajo N° 2 de Quilmes — {date.today().strftime('%d/%m/%Y')}</div>
-</div></body></html>"""
+            def fila_honorario(label, pct, neto, jus, ap, iva, total, minimo=False):
+                jus_val = f"{jus:.2f}" if jus is not None and jus == jus else "—"
+                min_txt = " ⚠️ *mínimo aplicado (JUS)*" if minimo else ""
+                st.markdown(f"**{label}:** {pct:.2f}% — {formato_moneda(neto)} — {jus_val} JUS{min_txt}")
+                st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;+ Aportes (10%): {formato_moneda(ap)}", unsafe_allow_html=True)
+                st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;+ IVA (21%): {formato_moneda(iva)}", unsafe_allow_html=True)
+                st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;**= Total con aportes e IVA: {formato_moneda(total)}**", unsafe_allow_html=True)
+                st.markdown("")
 
-    st.components.v1.html(html, height=1400, scrolling=True)
+            fila_honorario("Representación Actora",    h['actor_pct'], h['actor_neto'], h['actor_jus'], h['actor_ap'], h['actor_iva'], h['actor_total'], h.get('actor_min', False))
+            fila_honorario("Representación Demandada", h['dem_pct'],   h['dem_neto'],   h['dem_jus'],   h['dem_ap'],   h['dem_iva'],   h['dem_total'])
+            for i in range(1, h['n_aux'] + 1):
+                fila_honorario(f"Auxiliar {i}", h['aux_pct'], h['aux_neto'], h['aux_jus'], h['aux_ap'], h['aux_iva'], h['aux_total'], h.get('aux_min', False))
+
+            st.markdown("---")
+            total_con_factor = float(redondear(Decimal(str(h['total_sin_dem'])) * Decimal(str(FACTOR_HONORARIO))))
+            pct_con_factor = total_con_factor / monto_j * 100
+            st.markdown(f"**Total regulado (sin demandada):**")
+            st.markdown(f"Neto: {formato_moneda(h['total_sin_dem'])} — {h['pct_total']:.2f}%")
+            st.markdown(f"**Con aportes e IVA: {formato_moneda(total_con_factor)} — {pct_con_factor:.2f}%**")
