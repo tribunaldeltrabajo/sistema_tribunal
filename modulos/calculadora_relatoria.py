@@ -346,7 +346,29 @@ def texto_sentencia(r):
             f"IPC+3%: {formato_moneda(ipc['total'])}."
         )
 
-    return bloque_formula + "\n\n" + bloque_comparativo
+    tp = r.get('tp', {})
+    tp_total = tp.get('total', 0.0)
+    piso_67  = ipc.get('art55_piso', 0.0)
+    techo    = ipc['total']
+    activa   = tasa['total']
+
+    pct_act_vs_piso = (1 - (activa / piso_67)) * 100 if piso_67 > 0 else 0.0
+    pct_act_vs_pasiva = (1 - (activa / tp_total)) * 100 if tp_total > 0 else 0.0
+
+    bloque_art55_items = (
+        f"a) Tasa activa cartera general nominal anual vencida a 30 días del Banco de la Nación "
+        f"Argentina (art. 12, inc. 2°, ley 24.557): {formato_moneda(activa)}\n"
+        f"b) Tasa pasiva determinada por el BCRA (art. 55, inc. a), ley 27.802): {formato_moneda(tp_total)}\n"
+        f"c) Piso mínimo legal: 67% de la variación del IPC + 3% (art. 55, inc. c), ley 27.802): "
+        f"{formato_moneda(piso_67)};\n"
+        f"d) Techo máximo legal: variación íntegra del IPC + 3% (art. 55, inc. b), ley 27.802): "
+        f"{formato_moneda(techo)}.\n"
+        f"De esa comparación surge que la tasa activa BNA del ítem a) resulta inferior en más un "
+        f"{pct_act_vs_piso:.2f} % al piso mínimo legal estimado en el ítem c) e incluso en un "
+        f"{pct_act_vs_pasiva:.2f} % a la Tasa pasiva determinada por el BCRA calculada en el ítem b)."
+    )
+
+    return bloque_formula + "\n\n" + bloque_comparativo + "\n\n" + bloque_art55_items
 
 
 # ─────────────────────────────────────────────
