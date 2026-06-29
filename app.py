@@ -112,6 +112,10 @@ APLICACIONES = {
         "nombre": "📈 Actualización e Intereses",
         "modulo": "modulos.actualizacion"
     },
+    "honorarios": {
+        "nombre": "💵 Calculadora de Honorarios",
+        "modulo": "modulos.honorarios"
+    },
 
 }
 
