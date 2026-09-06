@@ -170,7 +170,7 @@ with tab_lrt:
     with c_cap1:
         lrt_capitaliza = st.checkbox("Capitaliza intereses (Art. 770 inc. b CCyC)", value=False, key="lrt_capitaliza")
     with c_cap2:
-        lrt_fecha_demanda = st.date_input("Fecha de interposición de demanda", value=date(2022, 1, 1),
+        lrt_fecha_demanda = st.date_input("Fecha de contestación de demanda", value=date(2022, 1, 1),
             min_value=date(2002,1,1), max_value=date.today(),
             format="DD/MM/YYYY", key="lrt_fecha_demanda", disabled=not lrt_capitaliza)
 
