@@ -321,8 +321,7 @@ def calcular_tasa_pasiva(monto, fecha_origen, fecha_calculo, datos_tp):
 # MOTOR 3 — ART. 55 COMPLETO
 # ─────────────────────────────────────────────
 
-def calcular_art55(monto, fecha_origen, fecha_calculo, df_ipc, df_cer, datos_tp, usar_bcra=False, datos_cer_xls=None,
-                   capitaliza=False, fecha_demanda=None):
+def calcular_art55(monto, fecha_origen, fecha_calculo, df_ipc, df_cer, datos_tp, usar_bcra=False, datos_cer_xls=None):
     """
     Calcula los tres valores del art. 55 y determina cuál aplica.
     Devuelve siempre los tres para que el juez pueda apartarse.
@@ -331,19 +330,12 @@ def calcular_art55(monto, fecha_origen, fecha_calculo, df_ipc, df_cer, datos_tp,
       - tasa_pasiva > ipc_3:        aplica ipc_3  (techo inc. b)
       - tasa_pasiva < piso_67:      aplica piso_67 (piso inc. c)
       - piso_67 <= tasa_pasiva <= ipc_3: aplica tasa_pasiva (inc. a)
-
-    Si capitaliza=True, la tasa pasiva se capitaliza a la fecha de
-    interposición de la demanda (art. 770 inc. b CCyC).
     """
     if usar_bcra and datos_cer_xls:
         r_ipc = calcular_bcra(monto, fecha_origen, fecha_calculo, datos_cer_xls)
     else:
         r_ipc = calcular_ipc_cer_3(monto, fecha_origen, fecha_calculo, df_ipc, df_cer)
-    cap_ok = bool(capitaliza and fecha_demanda and fecha_origen < fecha_demanda < fecha_calculo)
-    if cap_ok:
-        r_tp = calcular_con_capitalizacion(monto, fecha_origen, fecha_demanda, fecha_calculo, datos_tp, tipo='pasiva')
-    else:
-        r_tp = calcular_tasa_pasiva(monto, fecha_origen, fecha_calculo, datos_tp)
+    r_tp  = calcular_tasa_pasiva(monto, fecha_origen, fecha_calculo, datos_tp)
 
     ipc_3   = r_ipc['total']
     piso_67 = r_ipc['art55_piso']
@@ -371,58 +363,7 @@ def calcular_art55(monto, fecha_origen, fecha_calculo, df_ipc, df_cer, datos_tp,
         'label_aplica':  label_aplica,
         'detalle_ipc':   r_ipc,
         'detalle_tp':    r_tp,
-        'capitaliza':    cap_ok,
     }
-
-
-# ─────────────────────────────────────────────
-# CRITERIO DE CONFISCATORIEDAD — LRT
-# Tasa activa (art. 12 inc. 2 LRT) vs. IPC + 3%
-# ─────────────────────────────────────────────
-
-UMBRAL_MERMA = 33.0
-
-def evaluar_confiscatoriedad(activa_total, ipc_total, umbral=UMBRAL_MERMA):
-    """
-    Compara el resultado de la tasa activa con el IPC + 3%.
-    merma = (1 - activa / IPC+3%) × 100, redondeada a dos decimales.
-    Si la merma es MAYOR al umbral (33,00%) se aplica el art. 55 Ley 27.802;
-    en caso contrario (incluido 33,00% exacto) se aplica la tasa activa.
-    """
-    if not ipc_total or ipc_total <= 0:
-        return {'alcance_pct': 100.0, 'merma_pct': 0.0, 'supera': False, 'umbral': umbral}
-    merma   = float(Decimal(str((1 - activa_total / ipc_total) * 100)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
-    alcance = float(Decimal('100') - Decimal(str(merma)))
-    return {
-        'alcance_pct': alcance,
-        'merma_pct':   merma,
-        'supera':      merma > umbral,
-        'umbral':      umbral,
-    }
-
-
-def texto_detalle_tp(r_tp, capital_historico, f_origen, f_calculo):
-    """Renglones de liquidación de la tasa pasiva BCRA (simple o capitalizada)."""
-    fo = f_origen.strftime('%d/%m/%Y'); fc = f_calculo.strftime('%d/%m/%Y')
-    if 'tramo1' in r_tp:
-        f_dem = r_tp['fecha_demanda'].strftime('%d/%m/%Y')
-        return [
-            f"Intereses Tasa Pasiva BCRA desde {fo} hasta interposición de demanda ({f_dem}) "
-            f"(tasa período: {r_tp['tramo1']['tasa_pct']:.2f}%) $ {_fmt(r_tp['interes_tramo1'])}",
-            f"Capital Capitalizado al {f_dem} (Art. 770 inc. b CCyC) $ {_fmt(r_tp['capital_capitalizado'])}",
-            f"Intereses Tasa Pasiva BCRA desde {f_dem} hasta {fc} "
-            f"(tasa período: {r_tp['tramo2']['tasa_pct']:.2f}%) $ {_fmt(r_tp['total'] - r_tp['capital_capitalizado'])}",
-        ]
-    return [
-        f"Intereses Tasa Pasiva BCRA desde {fo} hasta {fc} "
-        f"(T₀: {r_tp['T0']:.6f} / Tₘ: {r_tp['Tm']:.6f} — tasa período: {r_tp['tasa_pct']:.2f}%) "
-        f"$ {_fmt(r_tp['total'] - capital_historico)}",
-    ]
-
-
-def _fmt(v):
-    s = f"{float(v):,.2f}"
-    return s.replace(',', 'X').replace('.', ',').replace('X', '.')
 
 
 # ─────────────────────────────────────────────
