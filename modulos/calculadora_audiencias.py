@@ -18,7 +18,7 @@ from utils.funciones_comunes import (
 from utils.motor_actualizacion import (
     cargar_todo, calcular_ipc_cer_3,
     calcular_bcra, calcular_art55, calcular_tasa_activa,
-    calcular_con_capitalizacion
+    calcular_con_capitalizacion, evaluar_confiscatoriedad
 )
 
 mostrar_sidebar_navegacion('audiencias')
@@ -96,7 +96,7 @@ def renglones_color(variantes):
             unsafe_allow_html=True
         )
 
-def bloque_art55(r55, key_bcra, capital, pmi, fcalc):
+def bloque_art55(r55, key_bcra, capital, pmi, fcalc, capitaliza=False, fecha_demanda=None):
     usar_bcra = st.checkbox(
         "Método BCRA (CER + 3% compuesto)", value=False, key=key_bcra,
         help="Usa CER diario + 3% compuesto, igual a la calculadora oficial del BCRA."
@@ -104,8 +104,9 @@ def bloque_art55(r55, key_bcra, capital, pmi, fcalc):
     if usar_bcra:
         r55 = calcular_art55(capital, pmi, fcalc,
                              DS['df_ipc'], DS['df_cer'], DS['datos_tp'],
-                             usar_bcra=True, datos_cer_xls=DS['datos_cer_xls'])
-    st.markdown("**Art. 55 Ley 27.802**")
+                             usar_bcra=True, datos_cer_xls=DS['datos_cer_xls'],
+                             capitaliza=capitaliza, fecha_demanda=fecha_demanda)
+    st.markdown("**Art. 55 Ley 27.802**" + (" — tasa pasiva con capitalización (Art. 770 inc. b CCyC)" if r55.get('capitaliza') else ""))
     aplica = r55['aplica']
     lbl_techo = 'CER + 3% — techo BCRA (Art. 55 inc. b LML)' if usar_bcra else 'IPC + 3% — techo (Art. 55 inc. b LML)'
     lbl_piso  = 'Art. 55 inc. c LML — 67% de CER + 3%' if usar_bcra else 'Art. 55 inc. c LML — 67% de IPC + 3%'
@@ -125,6 +126,35 @@ def bloque_art55(r55, key_bcra, capital, pmi, fcalc):
             f"</div>", unsafe_allow_html=True
         )
     return r55
+
+
+def caja_confiscatoriedad(tasa_total, ipc_total, r55, capitaliza=False):
+    """Recuadro: merma entre Tasa Activa e IPC+3% y resultado aplicable (umbral 33%)."""
+    conf = evaluar_confiscatoriedad(tasa_total, ipc_total)
+    color = '#c0392b' if conf['supera'] else '#2e7d32'
+    if conf['supera']:
+        concl = "SUPERA el umbral del 33% → se aplica el Art. 55 Ley 27.802"
+        valor = r55['valor_aplica']; label = f"Art. 55 Ley 27.802 — {r55['label_aplica']}"
+    else:
+        concl = "NO supera el umbral del 33% → se aplica la Tasa Activa BNA (art. 12 inc. 2 LRT)"
+        valor = tasa_total; label = "Tasa Activa BNA (art. 12 inc. 2 LRT)"
+    fila = lambda a, b: (f"<div style='display:flex;justify-content:space-between'><span>{a}</span>"
+                         f"<span style='font-family:monospace'>{b}</span></div>")
+    st.markdown(
+        f"<div style='border:2px solid {color};border-radius:8px;padding:12px 16px;margin:12px 0'>"
+        f"<div style='font-weight:700;margin-bottom:6px'>Comparación Tasa Activa vs. IPC + 3%"
+        f"{' (con capitalización art. 770 inc. b CCyC)' if capitaliza else ''}</div>"
+        + fila("Tasa Activa BNA", formato_moneda(tasa_total))
+        + fila("IPC + 3%", formato_moneda(ipc_total))
+        + fila("Alcance del mecanismo legal", f"{conf['alcance_pct']:.2f}%")
+        + fila("Merma", f"{conf['merma_pct']:.2f}%")
+        + f"<div style='margin:8px 0;font-weight:700;color:{color}'>{concl}</div>"
+        f"<div style='font-size:1.15rem;font-weight:800;color:{color};display:flex;justify-content:space-between'>"
+        f"<span>RESULTADO APLICABLE</span><span style='font-family:monospace'>{formato_moneda(valor)}</span></div>"
+        f"<div style='font-size:12px;color:#666'>{label}</div></div>",
+        unsafe_allow_html=True
+    )
+    return conf, valor, label
 
 # ─────────────────────────────────────────────
 # UI
@@ -207,7 +237,9 @@ with tab_lrt:
             else:
                 res_tasa = calcular_tasa_activa(capital_total, pmi, fecha_calculo_lrt, DS['df_tasa'])
             res_55   = calcular_art55(capital_total, pmi, fecha_calculo_lrt,
-                                      DS['df_ipc'], DS['df_cer'], DS['datos_tp'])
+                                      DS['df_ipc'], DS['df_cer'], DS['datos_tp'],
+                                      capitaliza=lrt_capitaliza,
+                                      fecha_demanda=lrt_fecha_demanda if lrt_capitaliza else None)
 
             st.session_state['lrt_res'] = {
                 'capital_formula': capital_formula, 'capital_base': capital_base,
@@ -258,7 +290,10 @@ with tab_lrt:
 
         # Art. 55
         st.markdown("---")
-        r55 = bloque_art55(r55, "lrt_bcra_55", r['capital_total'], r['pmi'], r['fecha_calculo'])
+        r55 = bloque_art55(r55, "lrt_bcra_55", r['capital_total'], r['pmi'], r['fecha_calculo'],
+                           capitaliza=r.get('capitaliza', False), fecha_demanda=r.get('fecha_demanda'))
+        st.session_state['lrt_r55_vista'] = r55
+        caja_confiscatoriedad(tasa['total'], ipc['total'], r55, r.get('capitaliza', False))
     else:
         st.info("👈 Completá los datos y presioná CALCULAR")
 
@@ -270,8 +305,16 @@ with tab_lrt:
 
         if st.session_state.get('mostrar_pdf_lrt'):
             r = st.session_state['lrt_res']
-            ipc = r['ipc']; tasa = r.get('tasa', {'total': 0, 'tasa_pct': 0}); r55 = r['art55']
+            ipc = r['ipc']; tasa = r.get('tasa', {'total': 0, 'tasa_pct': 0})
+            r55 = st.session_state.get('lrt_r55_vista', r['art55'])
             ipc_mayor = ipc['total'] >= tasa['total']
+            conf_pdf = evaluar_confiscatoriedad(tasa['total'], ipc['total'])
+            if conf_pdf['supera']:
+                concl_pdf = 'La merma supera el 33%: se aplica el Art. 55 Ley 27.802'
+                valor_pdf = r55['valor_aplica']; label_pdf = f"Art. 55 Ley 27.802 — {r55['label_aplica']}"
+            else:
+                concl_pdf = 'La merma no supera el 33%: se aplica la Tasa Activa BNA (art. 12 inc. 2 LRT)'
+                valor_pdf = tasa['total']; label_pdf = 'Tasa Activa BNA (art. 12 inc. 2 LRT)'
             aplica = r55['aplica']
 
             filas_55 = sorted([
@@ -324,6 +367,16 @@ th{{background:#333;color:#fff;font-weight:600;text-align:left}}
 </table>
 <div class="cap-box"><div style="font-size:9px;font-weight:600;margin-bottom:3px">CAPITAL BASE TOTAL</div>
 <div class="val">{formato_moneda(r['capital_total'])}</div></div>
+<h2>Comparación Tasa Activa vs. IPC + 3% (umbral de merma 33%)</h2>
+<table>
+<tr><td>Tasa Activa BNA{' (con capitalización Art. 770 inc. b CCyC)' if r.get('capitaliza') else ''}</td><td class="num">{formato_moneda(tasa['total'])}</td></tr>
+<tr><td>IPC + 3%</td><td class="num">{formato_moneda(ipc['total'])}</td></tr>
+<tr><td>Alcance del mecanismo legal</td><td class="num">{conf_pdf['alcance_pct']:.2f}%</td></tr>
+<tr><td>Merma</td><td class="num">{conf_pdf['merma_pct']:.2f}%</td></tr>
+<tr><td colspan="2"><b>{concl_pdf}</b></td></tr>
+</table>
+<div class="cap-box"><div style="font-size:9px;font-weight:600;margin-bottom:3px">RESULTADO APLICABLE — {label_pdf}</div>
+<div class="val">{formato_moneda(valor_pdf)}</div></div>
 <h2>Art. 55 Ley 27.802 — Juicios en trámite</h2>
 <table>
 <tr><th>Concepto</th><th class="num">Total</th></tr>

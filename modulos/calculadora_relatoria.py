@@ -18,7 +18,7 @@ from utils.funciones_comunes import (
 from utils.motor_actualizacion import (
     cargar_todo, calcular_ipc_cer_3, calcular_cer_simple, calcular_art55,
     calcular_tasa_activa as _calc_tasa, calcular_tasa_pasiva,
-    calcular_con_capitalizacion
+    calcular_con_capitalizacion, evaluar_confiscatoriedad, texto_detalle_tp
 )
 
 def mes_anio(fecha):
@@ -151,6 +151,18 @@ def calcular_lrt(pmi, f_calc, ibm, edad, incapacidad, art3, capitaliza=False, fe
         res_tasa = actualizar_tasa_activa(capital_total, pmi, f_calc)
         res_tp   = calcular_tasa_pasiva(capital_total, pmi, f_calc, DS['datos_tp'])
 
+    # Art. 55 Ley 27.802 — banda completa (tasa pasiva / piso 67% / techo IPC+3%)
+    res_55 = calcular_art55(capital_total, pmi, f_calc, DS['df_ipc'], DS['df_cer'], DS['datos_tp'],
+                            capitaliza=capitaliza, fecha_demanda=fecha_demanda)
+    # Criterio de confiscatoriedad: merma > 33% entre tasa activa e IPC+3% → art. 55
+    conf = evaluar_confiscatoriedad(res_tasa['total'], res_ipc['total'])
+    if conf['supera']:
+        aplicable_valor = res_55['valor_aplica']
+        aplicable_label = f"Art. 55 Ley 27.802 — {res_55['label_aplica']}"
+    else:
+        aplicable_valor = res_tasa['total']
+        aplicable_label = "Tasa Activa BNA (art. 12 inc. 2 LRT)"
+
     return {
         'capital_formula': capital_formula,
         'capital_base':    capital_base,
@@ -162,6 +174,10 @@ def calcular_lrt(pmi, f_calc, ibm, edad, incapacidad, art3, capitaliza=False, fe
         'cer':             res_cer,
         'tasa':            res_tasa,
         'tp':              res_tp,
+        'art55':           res_55,
+        'conf':            conf,
+        'aplicable_valor': aplicable_valor,
+        'aplicable_label': aplicable_label,
         'pmi':             pmi,
         'fecha_calculo':   f_calc,
         'ibm':             ibm,
@@ -259,15 +275,29 @@ def texto_liquidacion(r, caratula, variante):
                 f"2. Intereses Tasa Pasiva BCRA desde {f_pmi} hasta {f_calculo} "                f"(T\u2080: {tp['T0']:.6f} / T\u2098: {tp['Tm']:.6f} — tasa período: {tp['tasa_pct']:.2f}%) "                f"{formato_moneda(tp['total'] - r['capital_total'])}",
             ]
 
-    else:  # art55
-        subtotal = ipc.get('art55_piso', 0.0)
-        lineas = [
-            f"1. Capital Histórico {formato_moneda(r['capital_total'])}",
-            linea_act,
-            f"3. Interés puro del 3% anual desde {f_pmi} hasta {f_calculo} {formato_moneda(ipc['interes_3'])}",
-            f"SUBTOTAL CER + 3% {formato_moneda(ipc['total'])}",
-            f"4. Art. 55 Ley 27802 (67% de IPC+3%) {formato_moneda(subtotal)}",
-        ]
+    else:  # art55 — banda completa
+        r55 = r['art55']
+        subtotal = r55['valor_aplica']
+        det_tp = texto_detalle_tp(r55['detalle_tp'], r['capital_total'], r['pmi'], r['fecha_calculo'])
+        lineas = [f"1. Capital Histórico {formato_moneda(r['capital_total'])}", ""]
+        lineas.append("a) Tasa pasiva BCRA (art. 55 inc. a Ley 27.802 — Res. 45/26 BCRA)")
+        lineas += [f"   {l}" for l in det_tp]
+        lineas.append(f"   Total Tasa Pasiva BCRA {formato_moneda(r55['tasa_pasiva'])}")
+        lineas.append("")
+        lineas.append("b) Techo — IPC + 3% anual (art. 55 inc. b Ley 27.802)")
+        lineas.append("   " + linea_act[3:])
+        lineas.append(f"   Interés puro del 3% anual desde {f_pmi} hasta {f_calculo} {formato_moneda(ipc['interes_3'])}")
+        lineas.append(f"   Total IPC + 3% {formato_moneda(r55['ipc_3'])}")
+        lineas.append("")
+        lineas.append(f"c) Piso — 67% de IPC + 3% (art. 55 inc. c Ley 27.802) {formato_moneda(r55['piso_67'])}")
+        lineas.append("")
+        if r55['aplica'] == 'piso':
+            expl = "La tasa pasiva resulta inferior al piso del inc. c), por lo que se aplica el piso"
+        elif r55['aplica'] == 'techo':
+            expl = "La tasa pasiva supera el techo del inc. b), por lo que se aplica el techo"
+        else:
+            expl = "La tasa pasiva se ubica entre el piso del inc. c) y el techo del inc. b), por lo que se aplica la tasa pasiva"
+        lineas.append(f"{expl}: {formato_moneda(subtotal)}")
 
     tj, caja, total_final = agregar_tasas(subtotal)
     cuerpo = "\n".join(lineas)
@@ -288,9 +318,14 @@ def texto_liquidacion(r, caratula, variante):
     return texto, total_final
 
 
+def _pct(v):
+    return f"{v:.2f}".replace('.', ',')
+
+
 def texto_sentencia(r):
     ipc  = r['ipc']
     tasa = r['tasa']
+    conf = r['conf']
 
     art3_txt = (
         f"20% Art. 3 Ley 26.773: {formato_moneda(r['adicional_20'])}"
@@ -318,18 +353,20 @@ def texto_sentencia(r):
     pct_ipc  = ipc['pct_variacion']
     f_pmi    = r['pmi'].strftime('%d/%m/%Y')
 
-    if ipc['total'] > tasa['total']:
+    if conf['supera']:
         bloque_comparativo = (
             f"La confrontación entre la tasa activa del Banco de la Nación Argentina prevista en el "
             f"artículo 12 de la LRT y la variación del IPC correspondiente al período comprendido "
             f"entre {mes_pmi} de {anio_pmi} y la fecha evidencia, en el caso, la insuficiencia "
             f"del mecanismo legal para preservar el contenido económico de la prestación. En efecto, "
-            f"mientras la tasa activa acumuló aproximadamente un {pct_tasa:.2f}%, el IPC registrado "
-            f"por el INDEC para idéntico período alcanzó el {pct_ipc:.2f}%. El resultado concreto en "
-            f"el expediente es el que se expone en los guarismos obrantes en autos. "
-            f"Histórico al {f_pmi}: {formato_moneda(r['capital_total'])}; "
-            f"Tasa Act. BNA: {formato_moneda(tasa['total'])}; "
-            f"IPC+3%: {formato_moneda(ipc['total'])}."
+            f"mientras la tasa activa acumuló aproximadamente un {_pct(pct_tasa)}%, el IPC registrado "
+            f"por el INDEC para idéntico período alcanzó el {_pct(pct_ipc)}%. "
+            f"Los resultados concretos en el expediente son los siguientes: importe histórico al {f_pmi}, "
+            f"{formato_moneda(r['capital_total'])}; con aplicación de la tasa activa del Banco de la Nación "
+            f"Argentina (art. 12 inc. 2, LRT), {formato_moneda(tasa['total'])}; actualizado por IPC con más "
+            f"un tres por ciento (3%) anual, {formato_moneda(ipc['total'])}. El mecanismo legal alcanza así "
+            f"sólo el {_pct(conf['alcance_pct'])}% del valor actualizado, lo que importa una merma del "
+            f"{_pct(conf['merma_pct'])}%."
         )
     else:
         bloque_comparativo = (
@@ -337,8 +374,8 @@ def texto_sentencia(r):
             f"artículo 12 de la LRT y la variación del IPC correspondiente al período comprendido "
             f"entre {mes_pmi} de {anio_pmi} y la fecha no evidencia insuficiencia del mecanismo "
             f"legal para preservar el contenido económico de la prestación. En efecto, la tasa activa "
-            f"acumuló aproximadamente un {pct_tasa:.2f}%, en tanto el IPC registrado por el INDEC "
-            f"para idéntico período alcanzó el {pct_ipc:.2f}%, siendo en el caso el mecanismo legal "
+            f"acumuló aproximadamente un {_pct(pct_tasa)}%, en tanto el IPC registrado por el INDEC "
+            f"para idéntico período alcanzó el {_pct(pct_ipc)}%, siendo en el caso el mecanismo legal "
             f"constitucionalmente aceptable. El resultado concreto en el expediente es el que se "
             f"expone en los guarismos obrantes en autos. "
             f"Histórico al {f_pmi}: {formato_moneda(r['capital_total'])}; "
@@ -346,26 +383,41 @@ def texto_sentencia(r):
             f"IPC+3%: {formato_moneda(ipc['total'])}."
         )
 
-    tp = r.get('tp', {})
-    tp_total = tp.get('total', 0.0)
-    piso_67  = ipc.get('art55_piso', 0.0)
-    techo    = ipc['total']
+    if not conf['supera']:
+        return bloque_formula + "\n\n" + bloque_comparativo
+
+    r55      = r['art55']
+    tp_total = r55['tasa_pasiva']
+    piso_67  = r55['piso_67']
+    techo    = r55['ipc_3']
     activa   = tasa['total']
+    cap_txt  = " con capitalización de intereses (art. 770 inc. b CCyC)" if r.get('capitaliza') else ""
 
     pct_act_vs_piso = (1 - (activa / piso_67)) * 100 if piso_67 > 0 else 0.0
     pct_act_vs_pasiva = (1 - (activa / tp_total)) * 100 if tp_total > 0 else 0.0
 
     bloque_art55_items = (
         f"a) Tasa activa cartera general nominal anual vencida a 30 días del Banco de la Nación "
-        f"Argentina (art. 12, inc. 2°, ley 24.557): {formato_moneda(activa)}\n"
-        f"b) Tasa pasiva determinada por el BCRA (art. 55, inc. a), ley 27.802): {formato_moneda(tp_total)}\n"
+        f"Argentina (art. 12, inc. 2°, ley 24.557){cap_txt}: {formato_moneda(activa)}\n"
+        f"b) Tasa pasiva determinada por el BCRA (art. 55, inc. a), ley 27.802){cap_txt}: {formato_moneda(tp_total)}\n"
         f"c) Piso mínimo legal: 67% de la variación del IPC + 3% (art. 55, inc. c), ley 27.802): "
         f"{formato_moneda(piso_67)};\n"
         f"d) Techo máximo legal: variación íntegra del IPC + 3% (art. 55, inc. b), ley 27.802): "
         f"{formato_moneda(techo)}.\n"
         f"De esa comparación surge que la tasa activa BNA del ítem a) resulta inferior en más un "
-        f"{pct_act_vs_piso:.2f} % al piso mínimo legal estimado en el ítem c) e incluso en un "
-        f"{pct_act_vs_pasiva:.2f} % a la Tasa pasiva determinada por el BCRA calculada en el ítem b)."
+        f"{_pct(pct_act_vs_piso)} % al piso mínimo legal estimado en el ítem c)"
+        + (f" e incluso en un {_pct(pct_act_vs_pasiva)} % a la Tasa pasiva determinada por el BCRA "
+           f"calculada en el ítem b)." if activa < tp_total else ".")
+    )
+    if r55['aplica'] == 'piso':
+        res_txt = "al piso mínimo legal del ítem c), por resultar la tasa pasiva del ítem b) inferior a dicho piso"
+    elif r55['aplica'] == 'techo':
+        res_txt = "al techo máximo legal del ítem d), por resultar la tasa pasiva del ítem b) superior a dicho techo"
+    else:
+        res_txt = "a la tasa pasiva del ítem b), por ubicarse entre el piso del ítem c) y el techo del ítem d)"
+    bloque_art55_items += (
+        f"\nEn consecuencia, por aplicación de la banda prevista en el art. 55 de la ley 27.802, "
+        f"corresponde estar {res_txt}: {formato_moneda(r55['valor_aplica'])}."
     )
 
     return bloque_formula + "\n\n" + bloque_comparativo + "\n\n" + bloque_art55_items
@@ -540,12 +592,16 @@ if 'rel_res' in st.session_state and 'capital_formula' not in st.session_state.g
     del st.session_state['rel_res']
 if 'rel_res' in st.session_state and 'capitaliza' not in st.session_state.get('rel_res', {}):
     del st.session_state['rel_res']
+if 'rel_res' in st.session_state and 'conf' not in st.session_state.get('rel_res', {}):
+    del st.session_state['rel_res']
 
 if 'rel_res' in st.session_state:
     r = st.session_state['rel_res']
     ipc  = r['ipc']
     tasa = r['tasa']
-    art55 = ipc.get('art55_piso', 0.0)
+    r55   = r['art55']
+    conf  = r['conf']
+    art55 = r55['valor_aplica']
 
     cer_total = r.get('cer', {}).get('total', 0.0)
     tp_total  = r.get('tp',  {}).get('total', 0.0)
@@ -567,8 +623,8 @@ if 'rel_res' in st.session_state:
     principales = sorted([
         ('IPC + 3% (Art. 276 LCT conf. Art. 54 LML)',          ipc['total'],   '#4a9e9e'),
         ('Tasa Activa BNA (Art. 12 inc. b LRT conf. Art. 11 Ley 27.348)',   tasa['total'],  '#c8956a'),
-        ('Art. 55 inc. c LML — 67% de IPC + 3%', art55,          '#c8956a'),
-        ('Tasa Pasiva BCRA (Art. 55 inc. a LML conf. Res. 45/26 BCRA)',  tp_total,       '#9c82ae'),
+        ('Art. 55 inc. c LML — 67% de IPC + 3%', r55['piso_67'], '#c8956a'),
+        ('Tasa Pasiva BCRA (Art. 55 inc. a LML conf. Res. 45/26 BCRA)',  r55['tasa_pasiva'], '#9c82ae'),
     ], key=lambda x: -x[1])
 
     _colores_pos = ['#4a9e9e', '#6a9e7a', '#c8956a', '#9c82ae']
@@ -593,6 +649,41 @@ if 'rel_res' in st.session_state:
             unsafe_allow_html=True
         )
     st.markdown("<div style='margin-bottom:16px'></div>", unsafe_allow_html=True)
+
+    # ── Criterio de confiscatoriedad (merma > 33%) ──
+    _color_c = '#c0392b' if conf['supera'] else '#2e7d32'
+    _concl = ("SUPERA el umbral del 33% → se aplica el Art. 55 Ley 27.802"
+              if conf['supera'] else
+              "NO supera el umbral del 33% → se aplica la Tasa Activa BNA (art. 12 inc. 2 LRT)")
+    _filas55 = ""
+    if conf['supera']:
+        for _k, _lbl, _v in [('tasa_pasiva', 'a) Tasa Pasiva BCRA (inc. a)', r55['tasa_pasiva']),
+                             ('piso',        'c) Piso — 67% de IPC + 3% (inc. c)', r55['piso_67']),
+                             ('techo',       'd) Techo — IPC + 3% (inc. b)', r55['ipc_3'])]:
+            _b = "font-weight:800" if r55['aplica'] == _k else "font-weight:400"
+            _m = " ◀ aplica" if r55['aplica'] == _k else ""
+            _filas55 += (f"<div style='display:flex;justify-content:space-between;{_b}'>"
+                         f"<span>{_lbl}{_m}</span><span style='font-family:monospace'>{formato_moneda(_v)}</span></div>")
+    st.markdown(
+        f"<div style='border:2px solid {_color_c};border-radius:8px;padding:12px 16px;margin-bottom:16px'>"
+        f"<div style='font-weight:700;margin-bottom:6px'>Comparación Tasa Activa vs. IPC + 3%"
+        f"{' (con capitalización art. 770 inc. b CCyC)' if r.get('capitaliza') else ''}</div>"
+        f"<div style='display:flex;justify-content:space-between'><span>Tasa Activa BNA</span>"
+        f"<span style='font-family:monospace'>{formato_moneda(tasa['total'])}</span></div>"
+        f"<div style='display:flex;justify-content:space-between'><span>IPC + 3%</span>"
+        f"<span style='font-family:monospace'>{formato_moneda(ipc['total'])}</span></div>"
+        f"<div style='display:flex;justify-content:space-between'><span>Alcance del mecanismo legal</span>"
+        f"<span style='font-family:monospace'>{conf['alcance_pct']:.2f}%</span></div>"
+        f"<div style='display:flex;justify-content:space-between'><span>Merma</span>"
+        f"<span style='font-family:monospace'>{conf['merma_pct']:.2f}%</span></div>"
+        f"<div style='margin:8px 0;font-weight:700;color:{_color_c}'>{_concl}</div>"
+        f"{_filas55}"
+        f"<div style='margin-top:8px;font-size:1.15rem;font-weight:800;color:{_color_c};display:flex;justify-content:space-between'>"
+        f"<span>RESULTADO APLICABLE</span><span style='font-family:monospace'>{formato_moneda(r['aplicable_valor'])}</span></div>"
+        f"<div style='font-size:12px;color:#666'>{r['aplicable_label']}</div>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
 
     if r.get('capitaliza'):
         f_dem = r['fecha_demanda']
@@ -637,20 +728,24 @@ if 'rel_res' in st.session_state:
             ('art55', art55),
             ('tp',    tp_tot),
         ], key=lambda x: -x[1])
+        _var_aplicable = 'art55' if conf['supera'] else 'tasa'
+        variantes_liq = ([v for v in variantes_liq if v[0] == _var_aplicable] +
+                         [v for v in variantes_liq if v[0] != _var_aplicable])
 
-        labels = {'ipc': 'IPC + 3% (Art. 276 LCT conf. Art. 54 LML)', 'tasa': 'Tasa Activa BNA (Art. 12 inc. b LRT conf. Art. 11 Ley 27.348)', 'art55': 'Art. 55 Ley 27802 (67%)', 'tp': 'Tasa Pasiva BCRA (Art. 55 inc. a LML conf. Res. 45/26 BCRA)'}
+        labels = {'ipc': 'IPC + 3% (Art. 276 LCT conf. Art. 54 LML)', 'tasa': 'Tasa Activa BNA (Art. 12 inc. b LRT conf. Art. 11 Ley 27.348)', 'art55': f"Art. 55 Ley 27.802 — {r55['label_aplica']}", 'tp': 'Tasa Pasiva BCRA (Art. 55 inc. a LML conf. Res. 45/26 BCRA)'}
         subtotales = {'ipc': ipc['total'], 'tasa': tasa['total'], 'art55': art55, 'tp': tp_tot}
         for idx, (variante, _) in enumerate(variantes_liq):
             texto_var, total_final = texto_liquidacion(r, caratula, variante)
             subtotal = subtotales[variante]
-            titulo = f"**{labels[variante]} — {formato_moneda(subtotal)}**" if idx == 0 else f"{labels[variante]} — {formato_moneda(subtotal)}"
+            titulo = (f"**✅ APLICABLE — {labels[variante]} — {formato_moneda(subtotal)}**"
+                      if variante == _var_aplicable else f"{labels[variante]} — {formato_moneda(subtotal)}")
             st.markdown(titulo)
             st.text_area("", texto_var, height=max(400, texto_var.count("\n") * 28 + 100), key=f"ta_liq_{variante}")
 
     with tab_hon:
         st.subheader("Regulación de Honorarios — Ley 24.432")
-        # Monto viene del cálculo principal — el más favorable
-        monto_juicio_hon = max(ipc['total'], tasa['total'])
+        # Monto del juicio: resultado aplicable según criterio de confiscatoriedad
+        monto_juicio_hon = r['aplicable_valor']
 
         c1, c2 = st.columns(2)
         with c1:
@@ -660,7 +755,7 @@ if 'rel_res' in st.session_state:
             n_aux = st.number_input("Cantidad de auxiliares",
                 min_value=0, max_value=5, value=1, step=1, key="hon_naux")
 
-        st.caption(f"Monto del juicio (más favorable): {formato_moneda(monto_juicio_hon)}")
+        st.caption(f"Monto del juicio ({r['aplicable_label']}): {formato_moneda(monto_juicio_hon)}")
 
         if st.button("⚡ CALCULAR HONORARIOS", type="primary", key="btn_hon"):
             valor_jus, acuerdo_jus = get_valor_jus(DS['df_jus'], fecha_sent_hon)

@@ -15,7 +15,7 @@ from utils.funciones_comunes import redondear, formato_moneda, numero_a_letras, 
 from utils.motor_actualizacion import (
     cargar_todo, calcular_ipc_cer_3, calcular_cer_simple,
     calcular_art55, calcular_bcra, calcular_tasa_activa, calcular_tasa_pasiva,
-    calcular_con_capitalizacion, calcular_ripte_6
+    calcular_con_capitalizacion, calcular_ripte_6, texto_detalle_tp
 )
 
 mostrar_sidebar_navegacion('actualizacion')
@@ -93,7 +93,8 @@ if st.button("⚡ CALCULAR", type="primary", use_container_width=True, key="btn_
     else:
         r_ipc   = calcular_ipc_cer_3(monto, fecha_ini, fecha_fin, DS['df_ipc'], DS['df_cer'])
         r_cer   = calcular_cer_simple(monto, fecha_ini, fecha_fin, DS['datos_cer_xls'])
-        r55     = calcular_art55(monto, fecha_ini, fecha_fin, DS['df_ipc'], DS['df_cer'], DS['datos_tp'])
+        r55     = calcular_art55(monto, fecha_ini, fecha_fin, DS['df_ipc'], DS['df_cer'], DS['datos_tp'],
+                                 capitaliza=capitaliza, fecha_demanda=fecha_demanda if capitaliza else None)
         r_ripte = calcular_ripte_6(monto, fecha_ini, fecha_fin, DS['df_ripte'])
 
         if capitaliza:
@@ -204,20 +205,34 @@ usar_bcra_55 = st.checkbox(
 )
 if usar_bcra_55:
     r55_show = calcular_art55(monto_c, f_ini_c, f_fin_c, DS['df_ipc'], DS['df_cer'], DS['datos_tp'],
-                              usar_bcra=True, datos_cer_xls=DS['datos_cer_xls'])
+                              usar_bcra=True, datos_cer_xls=DS['datos_cer_xls'],
+                              capitaliza=cap_usado, fecha_demanda=f_demanda_usada)
 else:
     r55_show = r55
 
-st.markdown("**Art. 55 inc. c) LML — 67% de IPC + 3% (piso)**")
+_lbl_ref = "CER + 3%" if usar_bcra_55 else "IPC + 3%"
+st.markdown("**Art. 55 Ley 27.802 — banda legal**"
+            + (" (tasa pasiva con capitalización Art. 770 inc. b CCyC)" if r55_show.get('capitaliza') else ""))
+_filas = ""
+for _k, _lbl, _v in [('tasa_pasiva', 'a) Tasa Pasiva BCRA (inc. a — Res. 45/26 BCRA)', r55_show['tasa_pasiva']),
+                     ('piso',        f'b) Piso — 67% de {_lbl_ref} (inc. c)',         r55_show['piso_67']),
+                     ('techo',       f'c) Techo — {_lbl_ref} (inc. b)',               r55_show['ipc_3'])]:
+    _sel = r55_show['aplica'] == _k
+    _filas += (f"<div style='display:flex;justify-content:space-between;padding:3px 0;"
+               f"{'font-weight:800' if _sel else 'font-weight:400'}'>"
+               f"<span>{_lbl}{' ◀ aplica' if _sel else ''}</span>"
+               f"<span style='font-family:monospace'>{formato_moneda(_v)}</span></div>")
 st.markdown(
-    f"<div style='background:#9d6b18;padding:8px 16px;margin-bottom:8px;"
-    f"display:flex;justify-content:space-between;align-items:center;border-radius:4px'>"
-    f"<span style='color:white;font-weight:600'>Total Art. 55 inc. c)</span>"
-    f"<span style='color:white;font-family:monospace;font-size:16px;font-weight:800'>"
-    f"{formato_moneda(r55_show['piso_67'])}</span></div>",
+    f"<div style='border:2px solid #9d6b18;border-radius:8px;padding:12px 16px;margin-bottom:8px'>"
+    f"{_filas}"
+    f"<div style='border-top:1px solid #9d6b18;margin-top:8px;padding-top:8px;display:flex;"
+    f"justify-content:space-between;font-size:1.15rem;font-weight:800;color:#9d6b18'>"
+    f"<span>RESULTADO ART. 55</span><span style='font-family:monospace'>{formato_moneda(r55_show['valor_aplica'])}</span></div>"
+    f"<div style='font-size:12px;color:#666'>{r55_show['label_aplica']}</div>"
+    f"</div>",
     unsafe_allow_html=True
 )
-st.caption("Se calcula también el techo (inc. b) e la tasa pasiva (inc. a) — el juez puede apartarse de la banda por inconstitucionalidad.")
+st.caption("Banda: se aplica la tasa pasiva, salvo que resulte inferior al piso (se aplica el piso) o superior al techo (se aplica el techo).")
 
 with st.expander("Detalle"):
     st.write(f"**IPC + 3% — techo (inc. b):** {formato_moneda(r55_show['ipc_3'])}")
@@ -226,14 +241,34 @@ with st.expander("Detalle"):
     st.write(f"**Valor que aplica según la banda:** {r55_show['label_aplica']}")
 
 with st.expander("Liquidación"):
-    lineas_55 = [
-        f"1. Capital Histórico {formato_moneda(monto_c)}",
-        linea_act_ipc,
-        f"3. Interés puro del 3% anual desde {f_ini_str} hasta {f_fin_str} {formato_moneda(r['interes_3'])}",
-        f"SUBTOTAL IPC + 3% {formato_moneda(r['total'])}",
-        f"4. Art. 55 inc. c) LML — 67% de IPC + 3% {formato_moneda(r55_show['piso_67'])}",
+    _ri = r55_show['detalle_ipc']
+    if usar_bcra_55:
+        _linea_ref = (f"Capital Actualizado mediante CER diario ({_ri['cer_calculo_fecha'].strftime('%d/%m/%Y')}: "
+                      f"{_ri['cer_calculo']:.6f} / {_ri['cer_origen_fecha'].strftime('%d/%m/%Y')}: {_ri['cer_origen']:.6f} — "
+                      f"Coef. {_ri['coef']:.6f} — {_ri['pct_variacion']:.2f}%) {formato_moneda(_ri['capital_indexado'])}")
+        _linea_int = f"Interés del 3% anual compuesto desde {f_ini_str} hasta {f_fin_str} {formato_moneda(_ri['interes_3'])}"
+    else:
+        _linea_ref = linea_act_ipc[3:]
+        _linea_int = f"Interés puro del 3% anual desde {f_ini_str} hasta {f_fin_str} {formato_moneda(_ri['interes_3'])}"
+    if r55_show['aplica'] == 'piso':
+        _expl = "La tasa pasiva resulta inferior al piso del inc. c), por lo que se aplica el piso"
+    elif r55_show['aplica'] == 'techo':
+        _expl = "La tasa pasiva supera el techo del inc. b), por lo que se aplica el techo"
+    else:
+        _expl = "La tasa pasiva se ubica entre el piso del inc. c) y el techo del inc. b), por lo que se aplica la tasa pasiva"
+    lineas_55 = [f"1. Capital Histórico {formato_moneda(monto_c)}", "",
+                 "a) Tasa pasiva BCRA (art. 55 inc. a Ley 27.802 — Res. 45/26 BCRA)"]
+    lineas_55 += [f"   {l}" for l in texto_detalle_tp(r55_show['detalle_tp'], monto_c, f_ini_c, f_fin_c)]
+    lineas_55 += [
+        f"   Total Tasa Pasiva BCRA {formato_moneda(r55_show['tasa_pasiva'])}", "",
+        f"b) Techo — {_lbl_ref} anual (art. 55 inc. b Ley 27.802)",
+        f"   {_linea_ref}",
+        f"   {_linea_int}",
+        f"   Total {_lbl_ref} {formato_moneda(r55_show['ipc_3'])}", "",
+        f"c) Piso — 67% de {_lbl_ref} (art. 55 inc. c Ley 27.802) {formato_moneda(r55_show['piso_67'])}", "",
+        f"{_expl}: {formato_moneda(r55_show['valor_aplica'])}",
     ]
-    txt_55 = texto_liq_generico(monto_c, f_ini_c, f_fin_c, lineas_55, r55_show['piso_67'])
+    txt_55 = texto_liq_generico(monto_c, f_ini_c, f_fin_c, lineas_55, r55_show['valor_aplica'])
     st.text_area("", txt_55, height=max(300, txt_55.count('\n') * 28 + 100), key="ta_liq_55")
 
 st.markdown("---")
@@ -510,12 +545,12 @@ th {{background:#333;color:#fff;font-weight:600;text-align:left}}
 <tr><th>TOTAL</th><th class="num">{formato_moneda(r['total'])}</th></tr>
 </table>
 
-<h2>2. Art. 55 inc. c) LML — 67% de IPC + 3% (piso)</h2>
+<h2>2. Art. 55 Ley 27.802 — banda legal</h2>
 <table>
-<tr><td>IPC + 3% — techo (inc. b)</td><td class="num">{formato_moneda(r55_show['ipc_3'])}</td></tr>
-<tr><td>67% de IPC + 3% — piso (inc. c)</td><td class="num">{formato_moneda(r55_show['piso_67'])}</td></tr>
-<tr><td>Tasa Pasiva BCRA (inc. a)</td><td class="num">{formato_moneda(r55_show['tasa_pasiva'])}</td></tr>
-<tr><th>TOTAL (inc. c — piso)</th><th class="num">{formato_moneda(r55_show['piso_67'])}</th></tr>
+<tr><td>Tasa Pasiva BCRA (inc. a){' — con capitalización' if r55_show.get('capitaliza') else ''}{' ✓ APLICA' if r55_show['aplica']=='tasa_pasiva' else ''}</td><td class="num">{formato_moneda(r55_show['tasa_pasiva'])}</td></tr>
+<tr><td>67% de {_lbl_ref} — piso (inc. c){' ✓ APLICA' if r55_show['aplica']=='piso' else ''}</td><td class="num">{formato_moneda(r55_show['piso_67'])}</td></tr>
+<tr><td>{_lbl_ref} — techo (inc. b){' ✓ APLICA' if r55_show['aplica']=='techo' else ''}</td><td class="num">{formato_moneda(r55_show['ipc_3'])}</td></tr>
+<tr><th>RESULTADO ART. 55 — {r55_show['label_aplica']}</th><th class="num">{formato_moneda(r55_show['valor_aplica'])}</th></tr>
 </table>
 <p style="font-size:8.5px;color:#555;margin-bottom:8px">
 Se exponen los tres valores. El juez puede apartarse de la banda legal por razones de inconstitucionalidad.
